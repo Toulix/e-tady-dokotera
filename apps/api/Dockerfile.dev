@@ -1,0 +1,32 @@
+FROM node:20-slim
+
+# Install pnpm via corepack (matches the packageManager field in root package.json)
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+WORKDIR /app
+
+# Copy manifests first to leverage Docker layer caching.
+# pnpm-lock.yaml is at the repo root so it is NOT in this build context
+# (context: ./apps/api). We copy only package.json and run a non-frozen install.
+# tsconfig files must be in the image so ts-node can resolve module format and
+# path aliases at startup. src/ is NOT copied here — it is volume-mounted at
+# runtime (./apps/api/src:/app/src) to enable hot-reload without rebuilds.
+COPY package.json tsconfig.json tsconfig.build.json ./
+
+# The root pnpm-workspace.yaml is not available in this build context
+# (context: ./apps/api). The pnpm.onlyBuiltDependencies allowlist lives in the
+# root package.json, which pnpm cannot reach here. The app-level package.json
+# carries its own copy of the allowlist (see package.json pnpm field) so that
+# @nestjs/core and msgpackr-extract can run their postinstall scripts and
+# compile the native bindings they need.
+RUN pnpm install
+
+# TODO (Step 4): uncomment once the Prisma schema is confirmed and
+# prisma.config.ts is resolved.
+# COPY prisma ./prisma
+# RUN pnpm exec prisma generate
+
+EXPOSE 3000
+
+# Overridden at runtime by the docker-compose command: pnpm dev
+CMD ["pnpm", "dev"]

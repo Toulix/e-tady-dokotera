@@ -1,0 +1,21 @@
+FROM node:20-slim
+
+RUN corepack enable && corepack prepare pnpm@latest --activate
+
+WORKDIR /app
+
+COPY package.json ./
+
+RUN pnpm install
+
+# Copy only the static config/entry files needed to start Vite.
+# node_modules/ is intentionally NOT copied — it was installed above by pnpm
+# and copying the host's node_modules/ on top would overwrite the Linux-compiled
+# esbuild binary (and any other native bindings) with wrong-platform versions.
+# src/ is volume-mounted at runtime (./apps/web/src:/app/src) for HMR.
+COPY index.html vite.config.ts tsconfig.json tsconfig.app.json tsconfig.node.json ./
+COPY public/ ./public/
+
+EXPOSE 5173
+
+CMD ["pnpm", "dev"]

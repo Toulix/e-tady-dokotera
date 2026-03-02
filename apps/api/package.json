@@ -1,0 +1,58 @@
+{
+  "name": "@madagascar-health/api",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "// dev": "Runs NestJS directly via ts-node with path alias support (@ -> src/)",
+    "dev": "ts-node -r tsconfig-paths/register src/main.ts",
+    "// build": "Compiles TypeScript to dist/ using the build-specific tsconfig (excludes tests)",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "jest",
+    "lint": "eslint src/"
+  },
+  "dependencies": {
+    "@bull-board/api": "^6.20.3",
+    "@bull-board/express": "^6.20.3",
+    "@bull-board/nestjs": "^6.20.3",
+    "@nest-lab/throttler-storage-redis": "^1.2.0",
+    "@nestjs/bullmq": "^11.0.4",
+    "@nestjs/common": "^11.1.14",
+    "@nestjs/config": "^4.0.3",
+    "@nestjs/core": "^11.1.14",
+    "@nestjs/event-emitter": "^3.0.1",
+    "@nestjs/jwt": "^11.0.2",
+    "@nestjs/passport": "^11.0.5",
+    "@nestjs/platform-express": "^11.1.14",
+    "@nestjs/throttler": "^6.5.0",
+    "@prisma/client": "^7.4.2",
+    "bullmq": "^5.70.1",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.15.1",
+    "cookie-parser": "^1.4.7",
+    "express-basic-auth": "^1.2.1",
+    "helmet": "^8.1.0",
+    "ioredis": "^5.10.0",
+    "passport": "^0.7.0",
+    "passport-jwt": "^4.0.1",
+    "prisma": "^7.4.2",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.2",
+    "tsconfig-paths": "^4.2.0"
+  },
+  "devDependencies": {
+    "@types/cookie-parser": "^1.4.10",
+    "@types/express": "^5.0.6",
+    "@types/node": "^25.3.2",
+    "@types/passport-jwt": "^4.0.1",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@nestjs/core",
+      "@prisma/engines",
+      "msgpackr-extract",
+      "prisma"
+    ]
+  }
+}
