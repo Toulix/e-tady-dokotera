@@ -1,0 +1,28 @@
+{
+  "name": "madagascar-health",
+  "private": true,
+  "packageManager": "pnpm@10.30.3",
+  "scripts": {
+    "// scripts": "Turborepo delegates these to each workspace's matching script",
+    "dev": "turbo dev",
+    "build": "turbo build",
+    "test": "turbo test",
+    "lint": "turbo lint",
+    "// test:integration": "Spins up isolated postgres+redis containers, runs integration tests, then tears down",
+    "test:integration": "docker compose -f docker-compose.test.yml up -d && turbo test:integration && docker compose -f docker-compose.test.yml down"
+  },
+  "devDependencies": {
+    "turbo": "latest",
+    "typescript": "^5.0.0"
+  },
+  "// pnpm.onlyBuiltDependencies": "pnpm v10+ blocks postinstall scripts by default. This allowlist lets these packages run their build scripts (prisma: generates query engine, @nestjs/core: optional native optimizations, msgpackr-extract: compiles native msgpack bindings for BullMQ, esbuild: compiles native JS bundler binary for Vite).",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@nestjs/core",
+      "@prisma/engines",
+      "esbuild",
+      "msgpackr-extract",
+      "prisma"
+    ]
+  }
+}
