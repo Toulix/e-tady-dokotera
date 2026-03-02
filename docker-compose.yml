@@ -1,0 +1,61 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: madagascar_health
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: dev
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/docker/init-schemas.sql:/docker-entrypoint-initdb.d/01-schemas.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    # noeviction required — allkeys-lru silently drops BullMQ jobs (v1.3 fix)
+    command: redis-server --maxmemory 256mb --maxmemory-policy noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile.dev
+    ports: ["3000:3000"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+    # Load all vars from .env, then override the two that differ inside Docker:
+    # inside the container, "localhost" means the container itself — the services
+    # are reachable by their Compose service names instead.
+    env_file: .env
+    environment:
+      DATABASE_URL: "postgresql://dev:dev@postgres:5432/madagascar_health"
+      REDIS_HOST: redis
+    volumes:
+      - ./apps/api/src:/app/src
+    command: pnpm dev
+
+  web:
+    build:
+      context: ./apps/web
+      dockerfile: Dockerfile.dev
+    ports: ["5173:5173"]
+    volumes:
+      - ./apps/web/src:/app/src
+    command: pnpm dev
+
+  # NOTE: Bull Board is NOT a separate container — it runs inside the NestJS app.
+  # Access it at http://localhost:3000/admin/queues (password-protected).
+  # The deadly0/bull-board Docker image only supports Bull v3/v4 and is
+  # INCOMPATIBLE with BullMQ — do not use it.
+
+volumes:
+  pgdata:
