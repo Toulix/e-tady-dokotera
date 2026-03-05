@@ -230,7 +230,8 @@ AppointmentBooked      → Notifications (send confirmation SMS)
 AppointmentCancelled   → Notifications (send cancellation SMS) + Scheduling (free slot)
 AppointmentCompleted   → Analytics (record) + Notifications (request review)
 DoctorVerified         → Doctors (mark profile live)
-VideoSessionStarted    → Analytics (record)
+VideoSessionStarted    → Analytics (record session start)
+VideoSessionCompleted  → Analytics (record duration) + Notifications (send prescription prompt)
 SlotLockExpired        → Appointments (release unconfirmed booking)
 ```
 
@@ -614,7 +615,7 @@ Ref: [BOOKING_ID]
 - Mark as no-show
 - Request reschedule (sends notification to patient)
 - Cancel with reason (refund if applicable)
-- Add private notes (HIPAA/confidential)
+- Add private notes (confidential — medical data per Madagascar Law No. 2014-038)
 - Generate prescription
 
 **No-Show Management:**
@@ -1070,6 +1071,67 @@ Ref: [BOOKING_ID]
 }
 ```
 
+#### NotificationLog
+
+```tsx
+{
+  id: UUID (PK)
+  user_id: UUID (FK → auth.users)
+  channel: ENUM('sms', 'email', 'push')
+  event_type: STRING  // e.g. 'booking_confirmation', 'reminder_72h', 'reminder_24h', 'reminder_2h'
+  recipient: STRING   // phone number (E.164) or email address
+  message: TEXT
+  status: ENUM('queued', 'sent', 'delivered', 'failed')
+  provider: STRING | NULL   // 'orange', 'africas_talking', 'ses', 'mock'
+  provider_message_id: STRING | NULL
+  attempts: INTEGER DEFAULT 0
+  last_error: TEXT | NULL
+  sent_at: TIMESTAMPTZ | NULL
+  created_at: TIMESTAMPTZ
+}
+```
+
+#### DeviceToken (for push notifications — Phase 9)
+
+```tsx
+{
+  id: UUID (PK)
+  user_id: UUID (FK → auth.users)
+  token: STRING (unique)
+  platform: ENUM('ios', 'android')
+  created_at: TIMESTAMPTZ
+  updated_at: TIMESTAMPTZ
+}
+```
+
+#### VideoSession
+
+```tsx
+{
+  id: UUID (PK)
+  appointment_id: UUID (unique, FK → appointments.appointments)
+  room_name: STRING (unique)   // non-guessable UUID-based room identifier
+  started_at: TIMESTAMPTZ
+  ended_at: TIMESTAMPTZ | NULL
+  duration_minutes: INTEGER | NULL
+  recording_storage_key: STRING | NULL   // object storage key; pre-signed URL generated on demand
+  created_at: TIMESTAMPTZ
+}
+```
+
+#### ConsentRecord
+
+```tsx
+{
+  id: UUID (PK)
+  user_id: UUID (FK → auth.users)
+  consent_type: ENUM('recording', 'telemedicine_terms', 'data_processing')
+  granted: BOOLEAN
+  ip_address: STRING | NULL
+  created_at: TIMESTAMPTZ   // immutable — never updated; create a new row on consent change
+}
+```
+
 > 🔧 **Architect note — Availability entity redesigned:** The v1.0 `Availability` entity was a significant design problem. It mixed two fundamentally different concepts into one table: (1) the **recurring template** ("I work Mondays 9–12") and (2) **specific exceptions** ("I'm off on March 15"). Mixing these creates complex query logic, update anomalies, and makes it very difficult to generate slot availability for a future date. The correct pattern (used by Calendly, Doctolib, and similar platforms) is two separate tables: `WeeklyScheduleTemplate` (the rule) and `ScheduleException` (the override). The Scheduling module computes available slots on-demand by starting with the template, applying exceptions, then subtracting already-booked appointments. This is clean, efficient, and easy to reason about.
 > 
 
@@ -1194,6 +1256,41 @@ DELETE /api/v1/slots/lock/:lock_token   Release lock on booking cancellation or 
 POST /api/v1/consultations/:appointment_id/start   Doctor starts, room created
 GET  /api/v1/consultations/:appointment_id/join    Patient gets time-limited join token
 POST /api/v1/consultations/:appointment_id/end     End session, save metadata
+```
+
+#### Scheduling (Doctor-facing — Phase 3)
+
+```
+POST   /api/v1/scheduling/templates                [auth: doctor] Create weekly template
+GET    /api/v1/scheduling/templates                [auth: doctor] List own templates
+DELETE /api/v1/scheduling/templates/:id            [auth: doctor]
+
+POST   /api/v1/scheduling/exceptions               [auth: doctor] Add day-off or custom hours
+GET    /api/v1/scheduling/exceptions?from=&to=     [auth: doctor]
+DELETE /api/v1/scheduling/exceptions/:id           [auth: doctor]
+```
+
+#### Admin — Doctor Verification (Phase 1 backoffice)
+
+```
+GET    /api/v1/admin/doctors/pending               [auth: admin] List unverified doctor profiles
+POST   /api/v1/admin/doctors/:id/verify            [auth: admin] Mark profile live (emits DoctorVerified)
+POST   /api/v1/admin/doctors/:id/reject            [auth: admin] Reject with reason
+```
+
+#### Notifications — Device Tokens (Phase 9)
+
+```
+POST   /api/v1/notifications/device-token          [auth: any] Register FCM/APNs token for push notifications
+  Body: { token: string, platform: 'ios' | 'android' }
+DELETE /api/v1/notifications/device-token/:token   [auth: any] Unregister on logout or token rotation
+```
+
+#### Users
+
+```
+GET    /api/v1/users/me                            [auth: any] Current user profile (session restore)
+POST   /api/v1/auth/resend-otp                     Resend OTP (throttled: 3/hour per phone number)
 ```
 
 ---

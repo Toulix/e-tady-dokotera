@@ -237,6 +237,7 @@ CREATE SCHEMA IF NOT EXISTS scheduling;
 CREATE SCHEMA IF NOT EXISTS notifications;
 CREATE SCHEMA IF NOT EXISTS video;
 CREATE SCHEMA IF NOT EXISTS analytics;
+CREATE SCHEMA IF NOT EXISTS payments;  -- Phase 2: Mobile Money (Orange Money, MVola, Airtel)
 ```
 
 `.env.example` (commit this; never commit `.env`):
@@ -276,6 +277,18 @@ STORAGE_SECRET_KEY=
 
 # Sentry (leave empty in development)
 SENTRY_DSN=
+
+# Sentry — frontend (Vite exposes VITE_ prefix vars to the browser)
+VITE_SENTRY_DSN=
+
+# Video consultation (Jitsi Meet — Phase 7)
+JITSI_APP_ID=
+JITSI_APP_SECRET=
+JITSI_DOMAIN=video.yourdomain.com
+
+# Push notifications (Firebase Cloud Messaging — Phase 9)
+# Encode service account JSON: base64 -w 0 serviceAccount.json
+FIREBASE_SERVICE_ACCOUNT_BASE64=
 ```
 
 **✔ Acceptance:** `docker compose up` starts all services. `localhost:3000` responds (even 404 is fine). After completing Step 3, BullMQ board will be visible at `localhost:3000/admin/queues`.
@@ -1900,6 +1913,10 @@ GET /api/v1/doctors/:id/reviews
 
 ---
 
+> ⚠️ **Waitlist System — Phase 2 deferral:** Spec §3.2.3 defines a Waitlist System (add patients to waitlist for fully booked days, auto-notify when slot opens, priority ordering). The `waitlist` table is also noted in the `appointments` schema comment. **No roadmap step implements this for MVP.** Defer to Phase 2 alongside payments and EHR Lite. Before Phase 2 begins: design the `appointments.waitlist` Prisma model, a `PatientAddedToWaitlist` domain event, and a `WaitlistNotificationJob` BullMQ worker that fires when a slot is released via `AppointmentCancelled`.
+
+---
+
 ## Phase 5 — Notifications Module
 
 ### Week 6–7 · Goal: SMS confirmations sent, reminders scheduled, retries working
@@ -1935,6 +1952,12 @@ Implement these providers in order:
 
 // infrastructure/providers/africas-talking.provider.ts
 //   → Fallback: Africa's Talking API (better African routes than Twilio)
+
+// infrastructure/providers/telma-sms.provider.ts   ← Phase 2 — deferred
+// infrastructure/providers/airtel-madagascar.provider.ts  ← Phase 2 — deferred
+// Spec §8.1 defines a 4-tier hierarchy. Telma and Airtel adapters are stubbed here but
+// not wired into the factory below until Phase 2. The adapter interface ensures they can
+// be added without touching business logic.
 ```
 
 Provider selected by config — never `if/else` in business logic:
@@ -2568,6 +2591,7 @@ pnpm add -D @types/jsonwebtoken
 //   → Generates non-guessable room name: crypto.randomUUID()
 //   → Signs JWT for doctor (role: moderator) using Jitsi app_secret
 //   → Creates video.sessions row (room_name, started_at)
+//   → Publishes VideoSessionStarted domain event → Analytics (record session start)
 //   → Returns { room_url: "https://video.yourdomain.com/{room_name}",
 //               token: "...", room_name: "..." }
 
