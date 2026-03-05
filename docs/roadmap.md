@@ -1,4 +1,4 @@
-technical-roadmap-v1.5
+technical-roadmap-v1.6-infra-review
 
 # 🗺️ Technical Roadmap — Step-by-Step Build Guide
 
@@ -189,6 +189,9 @@ services:
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 2s
 
   api:
     build:
@@ -327,6 +330,9 @@ services:
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 2s
 ```
 
 Add to `.env.test` (committed, no secrets):
@@ -2228,6 +2234,45 @@ jobs:
         with:
           version: 10   # Must match the version in the repo (check engines.pnpm in root package.json)
       - run: pnpm install --frozen-lockfile
+
+      # CRITICAL-3: GitHub Actions service containers do NOT support volume mounts, so
+      # infra/docker/init-schemas.sql is never executed. PostGIS/pg_trgm extensions and
+      # all module schemas must be created manually before Prisma can migrate.
+      - name: Init CI database (extensions + schemas)
+        run: |
+          PGPASSWORD=test psql -h localhost -U test -d test -c "
+            CREATE EXTENSION IF NOT EXISTS postgis;
+            CREATE EXTENSION IF NOT EXISTS pg_trgm;
+            CREATE SCHEMA IF NOT EXISTS auth;
+            CREATE SCHEMA IF NOT EXISTS doctors;
+            CREATE SCHEMA IF NOT EXISTS appointments;
+            CREATE SCHEMA IF NOT EXISTS scheduling;
+            CREATE SCHEMA IF NOT EXISTS notifications;
+            CREATE SCHEMA IF NOT EXISTS video;
+            CREATE SCHEMA IF NOT EXISTS analytics;
+            CREATE SCHEMA IF NOT EXISTS payments;
+          "
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/test
+
+      # CRITICAL-3: Without prisma generate, every import of @prisma/client throws
+      # "PrismaClient did not initialize yet. Please run prisma generate." — all
+      # repository-touching tests fail before they even run.
+      - name: Generate Prisma client
+        run: pnpm --filter @madagascar-health/api exec prisma generate
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/test
+
+      - name: Run database migrations
+        run: pnpm --filter @madagascar-health/api exec prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/test
+
+      - name: Verify Redis noeviction policy
+        run: |
+          policy=$(redis-cli -h localhost -p 6379 CONFIG GET maxmemory-policy | tail -1)
+          [ "$policy" = "noeviction" ] || { echo "ERROR: Redis policy is '$policy', expected noeviction"; exit 1; }
+
       - run: pnpm turbo lint
       - run: pnpm turbo test
         env:
@@ -2240,6 +2285,41 @@ jobs:
           NODE_ENV: test
       - run: pnpm turbo build
 ```
+
+**`apps/api/Dockerfile`** — multi-stage production image (create this before wiring the deploy workflow):
+
+> ⚠️ **infra-review fix — HIGH-2:** The deploy workflow runs `docker build ./apps/api` with no `-f` flag, so Docker looks for `./apps/api/Dockerfile`. Only `Dockerfile.dev` exists (ts-node, no compile step, prisma generate commented out) — the deploy workflow fails immediately. Create this production Dockerfile before connecting CI/CD.
+
+```dockerfile
+FROM node:20-slim AS builder
+RUN corepack enable && corepack prepare pnpm@10.12.1 --activate
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY prisma.config.ts ./
+COPY prisma ./prisma
+RUN pnpm exec prisma generate
+COPY tsconfig.json tsconfig.build.json ./
+COPY src ./src
+RUN pnpm run build
+
+FROM node:20-slim AS production
+RUN corepack enable && corepack prepare pnpm@10.12.1 --activate
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile --prod
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder /app/node_modules/@prisma/client ./node_modules/@prisma/client
+COPY prisma ./prisma
+# Run as non-root for defense in depth
+RUN addgroup --system app && adduser --system --ingroup app app
+USER app
+EXPOSE 3000
+CMD ["node", "dist/main.js"]
+```
+
+---
 
 `.github/workflows/deploy.yml` — runs on push to `main`:
 
@@ -2317,8 +2397,9 @@ Create resources in this exact order:
 ```
 1. DigitalOcean project: "madagascar-health-production"
 2. Managed PostgreSQL cluster
-   - Plan: Basic, 1 GB RAM, 1 vCPU (~$50/month)
+   - Plan: Basic, 2 GB RAM, 1 vCPU, `db-s-1vcpu-2gb` (~$30/month)
    - Region: Frankfurt (fra1) — closest DO region to Madagascar
+   - node_count = 1 — no automated failover at MVP (see §4.2 in spec); add node_count = 2 at Phase 2
    - Enable: automated daily backups, connection pooling (PgBouncer)
 3. Droplet (app server)
    - Plan: 4 vCPU / 8 GB RAM (~$80/month)
@@ -2368,6 +2449,12 @@ terraform {
     key      = "prod/terraform.tfstate"
     skip_credentials_validation = true
     skip_metadata_api_check     = true
+    # infra-review fix (MEDIUM-2): DO Spaces uses path-style S3 URLs — without
+    # force_path_style, Terraform constructs virtual-hosted URLs that fail.
+    # skip_region_validation prevents Terraform from rejecting "us-east-1" as
+    # an invalid AWS region (it's valid for DO Spaces, not for AWS proper).
+    skip_region_validation = true
+    force_path_style       = true
     # Credentials: AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY env vars (DO Spaces keys)
   }
 }
@@ -2390,8 +2477,15 @@ resource "digitalocean_database_cluster" "postgres" {
   name       = "madagascar-health-db"
   engine     = "pg"
   version    = "16"
-  size       = "db-s-1vcpu-1gb"
+  # infra-review fix (MEDIUM-4): db-s-1vcpu-1gb (~$15/month, 1 GB RAM) is undersized
+  # for production PostGIS + concurrent connections. db-s-1vcpu-2gb (~$30/month, 2 GB
+  # RAM) is the minimum for MVP. Spec §16.2 updated to reflect actual cost.
+  size       = "db-s-1vcpu-2gb"
   region     = "fra1"
+  # infra-review fix (CRITICAL-4): node_count = 1 is a SINGLE-NODE cluster. DigitalOcean
+  # only provides automated failover with node_count >= 2. With one node, a hardware
+  # failure means 15–60 min manual recovery. Spec §4.2 updated to reflect this.
+  # Set node_count = 2 at Phase 2 if automated failover becomes a hard requirement.
   node_count = 1
 }
 
@@ -2447,26 +2541,38 @@ docker compose -f /opt/madagascar-health/docker-compose.prod.yml up -d
 
 Nginx config at `/etc/nginx/sites-available/api.yourdomain.com`:
 
+> ⚠️ **infra-review fix (MEDIUM-1 + LOW-3):** Applying `proxy_read_timeout 86400s` to all routes means a hung HTTP handler holds a Nginx worker connection open for 24 hours, exhausting the connection pool under load. Split WebSocket and HTTP routing. Also add `client_max_body_size` — Nginx defaults to 1 MB; file uploads (profile photos, lab results) are rejected with 413 without it.
+
 ```
 server {
   server_name api.yourdomain.com;
 
-  location / {
-    proxy_pass         http://localhost:3000;
-    proxy_http_version 1.1;
+  # infra-review fix (LOW-3): increase from default 1 MB to allow profile photo +
+  # document uploads (spec §8.5 mentions prescriptions, lab results, recordings).
+  client_max_body_size 10M;
 
-    # Required for WebSocket (Socket.io) upgrade
+  # WebSocket routing — 86400s timeout is correct only here (long-lived connections)
+  location /socket.io/ {
+    proxy_pass         http://127.0.0.1:3000;
+    proxy_http_version 1.1;
     proxy_set_header   Upgrade $http_upgrade;
     proxy_set_header   Connection "upgrade";
+    proxy_set_header   Host $host;
+    proxy_read_timeout 86400s;
+    proxy_send_timeout 86400s;
+  }
 
+  # HTTP API — short timeout; a hung handler should not hold a worker for 24 hours
+  location / {
+    proxy_pass         http://127.0.0.1:3000;
+    proxy_http_version 1.1;
     proxy_set_header   Host $host;
     proxy_set_header   X-Real-IP $remote_addr;
     proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header   X-Forwarded-Proto $scheme;
-
-    # Prevent Nginx from closing idle WebSocket connections
-    proxy_read_timeout 86400s;
-    proxy_send_timeout 86400s;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout    30s;
+    proxy_send_timeout    30s;
   }
 }
 ```
@@ -2518,8 +2624,16 @@ services:
       --requirepass ${REDIS_PASSWORD}
 
     healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      # infra-review fix (HIGH-1): Docker Compose substitutes env vars in string values
+      # but NOT in YAML array elements — ["CMD", "-a", "${REDIS_PASSWORD}"] passes the
+      # literal string "${REDIS_PASSWORD}" to redis-cli, causing auth to always fail,
+      # the container to be marked unhealthy, and the api (depends_on healthy) to
+      # never start. Use CMD-SHELL form where the shell performs variable substitution.
+      test: ["CMD-SHELL", "redis-cli -a $REDIS_PASSWORD ping"]
       interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
 
 volumes:
   redis_data:
@@ -2867,8 +2981,10 @@ systemctl enable alloy && systemctl start alloy
 // Replace <GRAFANA_CLOUD_*> with values from your Grafana Cloud stack settings
 
 // Scrape Docker container metrics
-// ⚠️ Docker metrics are NOT exposed by default. Before this works, enable the Docker metrics endpoint:
-// Add to /etc/docker/daemon.json: { "metrics-addr": "127.0.0.1:9323", "experimental": true }
+// ⚠️ Docker metrics are NOT exposed by default. Before this works, enable the Docker metrics endpoint.
+// infra-review fix (MEDIUM-5): "experimental": true was required for Docker <24 but generates
+// a deprecation warning on Docker 24+ where this feature is stable. Only "metrics-addr" is needed:
+// Add to /etc/docker/daemon.json: { "metrics-addr": "127.0.0.1:9323" }
 // Then: systemctl restart docker
 prometheus.scrape "docker" {
   targets = [{ __address__ = "localhost:9323" }]  // Docker metrics endpoint
@@ -3209,7 +3325,7 @@ Critical bugs fixed: (1) `SELECT FOR UPDATE` on wrong table — replaced with `I
 
 ---
 
-*Roadmap version 1.5 · March 2026 · Derived from Technical Specification v1.3*
+*Roadmap version 1.5 · March 2026 · Derived from Technical Specification v1.3 (see infra-review summary for v1.6 changes)*
 
 ---
 
@@ -3243,3 +3359,27 @@ Critical bugs fixed: (1) `SELECT FOR UPDATE` on wrong table — replaced with `I
 | 10 | Step 34 — security checklist | Missing `$queryRawUnsafe` ban, IDOR check, PII scrubbing, admin guard | Added all four items with implementation guidance | Critical security controls were absent from the audit checklist: raw SQL injection via `$queryRawUnsafe`, patient record access without ownership check, PII leakage to Sentry logs, and unguarded admin routes |
 | 11 | Step 35 — k6 `http.post` params | `headers` object missing closing `}`, `tags` passed as second argument | Fixed: `headers` and `tags` as top-level properties of a single params object | JavaScript syntax error — k6 would throw at parse time; the load test could not run at all |
 | 12 | Step 37 — admin controller | No guard shown on admin endpoints | Added `@UseGuards(JwtAuthGuard, RolesGuard)` + `@Roles('admin')` on controller class | Nginx IP allowlist is network-level only; requests reaching the NestJS process from within the Docker network (or misconfigured proxy) would have unrestricted admin access without an application-level guard |
+
+---
+
+### infra-review Changes (Infrastructure & DevOps Review)
+
+| ID | Location | Before | After | Reason |
+| --- | --- | --- | --- | --- |
+| CRITICAL-1 | Step 27 — CI Redis | (already fixed in v1.5 via `command:`) | Added `Verify Redis noeviction policy` CI step | Confirms the policy is applied at runtime — catches regressions or runner image changes |
+| CRITICAL-3 + HIGH-3 | Step 27 — CI YAML | No `prisma generate`, no DB schema init | Added: DB extensions+schemas init, `prisma generate`, `prisma migrate deploy` | Without `prisma generate`, every `@prisma/client` import throws; without schema init, integration tests fail with "schema does not exist" |
+| HIGH-2 | Step 27 — before deploy.yml | No production `Dockerfile` | Added multi-stage `apps/api/Dockerfile` to the roadmap | `docker build ./apps/api` looks for `Dockerfile` (no `-f` flag); only `Dockerfile.dev` existed — deploy fails immediately |
+| HIGH-1 | Step 28 — `docker-compose.prod.yml` Redis healthcheck | `["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]` (array form) | `["CMD-SHELL", "redis-cli -a $REDIS_PASSWORD ping"]` + `timeout`, `retries`, `start_period` | Array form in Docker Compose does not substitute env vars — literal `${REDIS_PASSWORD}` sent to redis-cli → auth fails → container unhealthy → API never starts |
+| MEDIUM-1 | Step 28 — Nginx config | Single `location /` block with `proxy_read_timeout 86400s` for all routes | Split: `location /socket.io/` (86400s) and `location /` (30s) | 24-hour timeout on HTTP API routes holds Nginx worker connections open on hung handlers, exhausting the pool under load |
+| LOW-3 | Step 28 — Nginx config | No `client_max_body_size` | Added `client_max_body_size 10M;` | Nginx defaults to 1 MB; profile photos and document uploads are rejected with 413 |
+| MEDIUM-2 | Step 28 — Terraform S3 backend | Missing `skip_region_validation` and `force_path_style` | Both added | DO Spaces uses path-style S3 URLs; without `force_path_style` Terraform constructs virtual-hosted URLs that fail; without `skip_region_validation` Terraform rejects `us-east-1` |
+| MEDIUM-4 | Step 28 — Terraform DB cluster | `size = "db-s-1vcpu-1gb"` (~$15/month, 1 GB RAM) | `size = "db-s-1vcpu-2gb"` (~$30/month, 2 GB RAM) | 1 GB RAM undersized for production PostGIS + connections; spec §16.2 cost corrected |
+| CRITICAL-4 | Step 28 — Terraform + spec §4.2 | `node_count = 1` with spec claiming "automated failover" | Comment added; spec §4.2 corrected to state single-node limitation | DigitalOcean only provides automated failover with `node_count >= 2` |
+| MEDIUM-5 | Step 36 — Grafana Alloy | `{ "metrics-addr": "127.0.0.1:9323", "experimental": true }` | Removed `"experimental": true` | Docker 24+ makes this stable; the flag generates deprecation warnings |
+| LOW-2 | Steps 2, 2b — compose Redis healthchecks | Missing `timeout` and `retries` | Added `timeout: 3s`, `retries: 5`, `start_period: 2s` to dev and test Redis healthchecks | Without `retries`, Docker marks unhealthy after first failure; transient startup delays fail silently |
+| LOW-1 | `apps/api/Dockerfile.dev` | `pnpm@latest` — non-deterministic | Pinned to `pnpm@10.12.1` | `pnpm@latest` can resolve to different major versions across builds — non-reproducible installs |
+| LOW-1 | `apps/web/Dockerfile.dev` | `pnpm@latest` — non-deterministic | Pinned to `pnpm@10.12.1` | Same reason as above |
+
+---
+
+*Roadmap version 1.6 (infra-review) · March 2026 · Derived from Technical Specification v1.5*

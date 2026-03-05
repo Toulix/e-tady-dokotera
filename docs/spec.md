@@ -2,11 +2,14 @@ Healthcare Booking Platform - Technical Specification
 
 ## Madagascar Medical Appointment System
 
-**Version:** 1.4 (Fourth Architect Review — Data Model)
+**Version:** 1.5 (Fifth Architect Review — Infrastructure & DevOps)
 
 **Date:** March 2026
 
 **Target Market:** Madagascar
+
+> ⚠️ **Review Note (v1.5):** Fifth architect review — infrastructure & DevOps audit against `domain-infrastructure/findings.md`. Corrections applied: (1) §4.2 PostgreSQL failover claim corrected — `node_count = 1` provides no automated failover; Phase 2 upgrade path documented; (2) §16.2 PostgreSQL cost corrected from ~$50 to ~$30 (plan `db-s-1vcpu-2gb`, 2 GB RAM); (3) §16.2 total monthly cost updated from ~$435–$1,035 to ~$415–$1,015.
+>
 
 > ⚠️ **Review Note (v1.4):** Fourth architect review — data model audit against `domain-data-model/findings.md`. Corrections applied: (1) §5.1 DoctorProfile `average_rating` changed from `NUMERIC(3,2)` to `INTEGER` (0–500 scale); (2) §2.2 cross-module write violation fixed — rating update owned by Doctors module, not Analytics; `ReviewSubmitted` domain event added; (3) §5.1 `auth.sessions` model added (refresh token server-side store); (4) §5.1 `DoctorFacility` join table formally modeled; (5) §5.1 `VisitNote` Phase 2 model documented; (6) §5.1 `NotificationLog` gains `appointment_id` field; (7) §5.1 `ScheduleException` gains `updated_at`; (8) §5.2 `WeeklyScheduleTemplate` uniqueness partial index added; (9) §5.2 schedule_template index made partial on `is_active`; (10) §5.2 five missing indexes added (slot_lock, notification_log, sessions, profile_live_rating); (11) §5.2 GIST index made partial `WHERE geolocation IS NOT NULL`; (12) §5.2 planner behavior comment added to `appt_status_time_idx`.
 >
@@ -838,7 +841,7 @@ Ref: [BOOKING_ID]
 
 **Fault Tolerance:**
 
-- Managed PostgreSQL with automated failover (DigitalOcean Managed DB provides this)
+- Managed PostgreSQL — **single-node for MVP** (`node_count = 1`). DigitalOcean only provides automated failover with `node_count >= 2`; a hardware failure at MVP means 15–60 min manual recovery. Automated failover (`node_count = 2`, ~doubles DB cost) is a Phase 2 upgrade, not a Day 1 requirement.
 - Circuit breaker pattern for all external service calls (SMS, video, maps)
 - Graceful degradation: if SMS fails → email; if video fails → in-app link with instructions
 
@@ -1605,7 +1608,7 @@ On merge to main:   above + manual approval gate + blue-green deploy to producti
 | Component | Monthly Cost |
 | --- | --- |
 | App Droplet (4 vCPU / 8 GB) | ~$80 |
-| Managed PostgreSQL (1 GB RAM) | ~$50 |
+| Managed PostgreSQL (2 GB RAM, `db-s-1vcpu-2gb`) | ~$30 |
 | Redis (co-located at MVP) | $0 |
 | Jitsi VM (2 vCPU / 4 GB) | ~$40 |
 | Object Storage (DO Spaces, 250 GB) | ~$20 |
@@ -1614,9 +1617,9 @@ On merge to main:   above + manual approval gate + blue-green deploy to producti
 | SMS (Orange/Telma/Africa's Talking) | $200–$800 (volume-dependent) |
 | Email (Amazon SES) | ~$10 |
 | Domain + misc | ~$15 |
-| **Total/month** | **~$435–$1,035** |
+| **Total/month** | **~$415–$1,015** |
 
-**6-month MVP infrastructure cost: ~$2,600–$6,200** (vs. $12,000–$30,000 for microservices)
+**6-month MVP infrastructure cost: ~$2,490–$6,090** (vs. $12,000–$30,000 for microservices)
 
 ---
 
@@ -1796,7 +1799,23 @@ The v1.1 review corrected internal consistency issues (primarily the Kubernetes/
 
 ---
 
-**Document Version:** 1.4 (Fourth Architect Review — Data Model)
+---
+
+## 24. Architecture Review Summary — v1.5 Changes
+
+> This section documents changes made in the v1.5 infrastructure review. All prior changes remain in Sections 19, 21, 22, and 23.
+
+| # | Area | v1.4 | v1.5 | Reason |
+| --- | --- | --- | --- | --- |
+| INFRA-CRITICAL-4 | §4.2 PostgreSQL failover | "Managed PostgreSQL with automated failover (DigitalOcean Managed DB provides this)" | Single-node MVP (`node_count = 1`) provides no automated failover; 15–60 min manual recovery on hardware failure. Phase 2 upgrade path noted. | `node_count = 1` disables DO's failover — spec was factually incorrect. |
+| INFRA-MEDIUM-4 | §16.2 DB cost | ~$50/month (no plan specified) | ~$30/month (`db-s-1vcpu-2gb`, 2 GB RAM) | `db-s-1vcpu-1gb` (~$15/month) was undersized for production PostGIS + concurrent connections. The ~$50 figure matched no real DO tier. |
+| INFRA-MEDIUM-4 | §16.2 total cost | ~$435–$1,035/month | ~$415–$1,015/month | DB cost correction propagated to total. |
+
+> Note: All other infrastructure findings (CI pipeline, Terraform, Nginx, Docker, Grafana Alloy) apply to the Technical Roadmap only and are captured in the roadmap's inline fix notes and its Phase 6 section.
+
+---
+
+**Document Version:** 1.5 (Fifth Architect Review — Infrastructure & DevOps)
 
 **Original Version:** 1.0 (February 17, 2026)
 
