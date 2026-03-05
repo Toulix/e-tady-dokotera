@@ -379,6 +379,55 @@ apps/api/src/
 └── main.ts
 ```
 
+> ⚠️ **v1.5 fix — populate shared/events/ immediately:** The `shared/events/` directory is created above but left empty. `@OnEvent` handlers in Steps 17 and 25 reference `AppointmentBookedEvent`, `AppointmentCancelledEvent`, and `ScheduleTemplateUpdatedEvent` — these classes must exist before any handler is written or TypeScript compilation fails. Create them now:
+>
+
+```tsx
+// shared/events/appointment-booked.event.ts
+export class AppointmentBookedEvent {
+  constructor(
+    public readonly appointmentId: string,
+    public readonly doctorId: string,
+    public readonly patientId: string,
+    public readonly startTime: Date,
+  ) {}
+}
+
+// shared/events/appointment-cancelled.event.ts
+export class AppointmentCancelledEvent {
+  constructor(
+    public readonly appointmentId: string,
+    public readonly doctorId: string,
+    public readonly patientId: string,
+    public readonly cancelledBy: 'patient' | 'doctor' | 'system',
+  ) {}
+}
+
+// shared/events/appointment-rescheduled.event.ts
+export class AppointmentRescheduledEvent {
+  constructor(
+    public readonly appointmentId: string,
+    public readonly doctorId: string,
+    public readonly patientId: string,
+    public readonly newStartTime: Date,
+  ) {}
+}
+
+// shared/events/schedule-template-updated.event.ts
+export class ScheduleTemplateUpdatedEvent {
+  constructor(public readonly doctorId: string) {}
+}
+
+// shared/events/slot-lock-expired.event.ts
+export class SlotLockExpiredEvent {
+  constructor(
+    public readonly doctorId: string,
+    public readonly slotTime: Date,
+    public readonly lockToken: string,
+  ) {}
+}
+```
+
 ---
 
 ### ✅ Step 3b — Shared infrastructure modules (Redis, Config, BullMQ, EventEmitter)
@@ -444,7 +493,11 @@ import Redis from 'ioredis';
     // 2. Shared Redis provider
     RedisModule,
 
-    // 3. BullMQ — connect to the same Redis instance
+    // 3. BullMQ — creates its OWN dedicated Redis connection (separate from REDIS_CLIENT above).
+    // BullMQ uses blocking Redis commands (BRPOPLPUSH) that are incompatible with a shared
+    // ioredis client. Do NOT attempt to pass REDIS_CLIENT into BullMQ.forRootAsync — it will
+    // deadlock. Two Redis connections is correct and expected: one for general-purpose use
+    // (REDIS_CLIENT) and one owned by BullMQ for its queue operations.
     BullModule.forRootAsync({
       useFactory: (config: ConfigService) => ({
         connection: {
@@ -488,6 +541,29 @@ import Redis from 'ioredis';
 export class AppModule {}
 ```
 
+> ⚠️ **v1.5 fix — mandatory @OnEvent error logging pattern:** `ignoreErrors: true` correctly prevents notification failures from crashing the booking service, but errors are swallowed completely — no log, no Sentry trace. On a healthcare platform, a failed SMS with no trace is operationally dangerous. ALL `@OnEvent` handlers MUST use the pattern below. No handler is permitted to have an empty catch block.
+>
+
+**Mandatory `@OnEvent` handler pattern (enforced in code review):**
+
+```tsx
+import * as Sentry from '@sentry/node';
+import { Logger } from '@nestjs/common';
+
+// Every @OnEvent handler must follow this pattern — no exceptions.
+@OnEvent('appointment.booked')
+async handleAppointmentBooked(event: AppointmentBookedEvent): Promise<void> {
+  try {
+    await this.notificationService.sendConfirmation(event.appointmentId);
+  } catch (err) {
+    // Log structured error (visible in Grafana Loki) and capture in Sentry.
+    // Never rethrow — the booking has already succeeded.
+    this.logger.error('Failed to send booking confirmation SMS', { err, appointmentId: event.appointmentId });
+    Sentry.captureException(err, { extra: { event } });
+  }
+}
+```
+
 **Publishing domain events** (pattern used from Phase 4 onwards):
 
 ```tsx
@@ -512,6 +588,39 @@ async handleAppointmentBooked(event: AppointmentBookedEvent): Promise<void> {
 ```
 
 ---
+
+**`shared/middleware/request-id.middleware.ts`** — generates or forwards a `X-Request-ID` header so every log line, Sentry event, and response envelope shares the same correlation ID:
+
+```tsx
+import { Injectable, NestMiddleware } from '@nestjs/common';
+import { Request, Response, NextFunction } from 'express';
+import { randomUUID } from 'crypto';
+
+// Reads X-Request-ID from the incoming request (set by Cloudflare/Nginx/client)
+// or generates a fresh UUID if absent. Attaches to req.requestId and echoes it
+// back in the response header so clients can correlate their requests in logs.
+@Injectable()
+export class RequestIdMiddleware implements NestMiddleware {
+  use(req: Request, res: Response, next: NextFunction): void {
+    const requestId = (req.headers['x-request-id'] as string) ?? randomUUID();
+    (req as any).requestId = requestId;
+    res.setHeader('X-Request-ID', requestId);
+    next();
+  }
+}
+```
+
+Register in `AppModule.configure()`:
+
+```tsx
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(RequestIdMiddleware).forRoutes('*');
+  }
+}
+```
+
+`ResponseEnvelopeInterceptor` reads `req.requestId` to populate `meta.request_id`. `HttpExceptionFilter` does the same (see filter above). Sentry middleware should also attach it as a tag.
 
 Wire global middleware, interceptors, and exception filter in `main.ts`:
 
@@ -584,6 +693,48 @@ async function bootstrap() {
   console.log(`API listening on port ${port}`);
 }
 bootstrap();
+```
+
+**`shared/filters/http-exception.filter.ts`** — must be implemented before the app can return spec-compliant error envelopes:
+
+```tsx
+import { ExceptionFilter, Catch, ArgumentsHost, HttpException, HttpStatus, Logger } from '@nestjs/common';
+import { Request, Response } from 'express';
+
+// Catches all thrown HttpExceptions and formats them into the standard error envelope:
+// { success: false, data: null, meta: { timestamp, request_id }, error: { code, message } }
+@Catch(HttpException)
+export class HttpExceptionFilter implements ExceptionFilter {
+  private readonly logger = new Logger(HttpExceptionFilter.name);
+
+  catch(exception: HttpException, host: ArgumentsHost): void {
+    const ctx = host.switchToHttp();
+    const response = ctx.getResponse<Response>();
+    const request = ctx.getRequest<Request>();
+    const status = exception.getStatus();
+    const exceptionResponse = exception.getResponse();
+
+    // Support both string and object thrown exceptions
+    const code = typeof exceptionResponse === 'object' && 'code' in exceptionResponse
+      ? (exceptionResponse as any).code
+      : `HTTP_${status}`;
+    const message = typeof exceptionResponse === 'object' && 'message' in exceptionResponse
+      ? (exceptionResponse as any).message
+      : exception.message;
+
+    this.logger.warn(`${request.method} ${request.url} → ${status}: ${code}`);
+
+    response.status(status).json({
+      success: false,
+      data: null,
+      meta: {
+        timestamp: new Date().toISOString(),
+        request_id: (request as any).requestId ?? null,
+      },
+      error: { code, message },
+    });
+  }
+}
 ```
 
 **✔ Acceptance:** `GET /health` returns `{ "success": true, "data": { "status": "ok", "uptime": 12.3 } }`.
@@ -918,6 +1069,9 @@ Implement in `modules/auth/api/auth.controller.ts`:
 ```
 POST /api/v1/auth/register
   Body: { phone_number, password, first_name, last_name, user_type }
+  → user_type MUST be validated with @IsIn(['patient']) in RegisterDto — self-registration
+    as 'doctor', 'admin', or 'support' is forbidden. Doctor accounts are created via
+    admin-initiated invite. Admin/support accounts via internal tooling only.
   → Creates user (is_verified: false), generates OTP, queues SMS job
   → Returns 201 { message: "OTP sent" }
 
@@ -930,7 +1084,11 @@ POST /api/v1/auth/verify-otp
 POST /api/v1/auth/login
   Body: { phone_number, password }
   → Validates credentials, checks is_verified
-  → Stores hashed refresh_token in Redis: key refresh:{user_id}, TTL 7 days
+  → Stores bcrypt-hashed refresh token in Redis: key refresh:{user_id}, TTL 7 days.
+    Store the HASH, never the raw token: `await redis.set(`refresh:${userId}`,
+    await bcrypt.hash(refreshToken, 10), 'EX', 7 * 24 * 3600)`. On /auth/refresh,
+    compare the incoming token against the stored hash with bcrypt.compare(). This
+    ensures a Redis compromise does not expose valid session tokens.
   → Returns 200 { access_token: "..." }  ← access token in body ONLY
   → Sets Set-Cookie header (same as above)
 
@@ -956,22 +1114,29 @@ import { Response, Request } from 'express';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly config: ConfigService,
+  ) {}
 
-  // Helper to set the refresh token cookie — call from login, verify-otp, and refresh
+  // Helper to set the refresh token cookie — call from login, verify-otp, and refresh.
+  // Path is derived from ConfigService so it stays in sync if the global API prefix changes.
+  // A hardcoded '/api/v1/auth/refresh' would break if app.setGlobalPrefix() changes.
   private setRefreshCookie(response: Response, token: string): void {
+    const prefix = this.config.get<string>('API_PREFIX', 'api/v1');
     response.cookie('refresh_token', token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'strict',
-      path: '/api/v1/auth/refresh',  // cookie only sent to the refresh endpoint
+      path: `/${prefix}/auth/refresh`,  // cookie only sent to the refresh endpoint
       maxAge: 7 * 24 * 60 * 60 * 1000,  // 7 days in ms
     });
   }
 
   // Helper to clear the refresh token cookie on logout
   private clearRefreshCookie(response: Response): void {
-    response.clearCookie('refresh_token', { path: '/api/v1/auth/refresh' });
+    const prefix = this.config.get<string>('API_PREFIX', 'api/v1');
+    response.clearCookie('refresh_token', { path: `/${prefix}/auth/refresh` });
   }
 
   @Post('login')
@@ -1271,6 +1436,21 @@ export function generateAvailableSlots(
 }
 ```
 
+> ⚠️ **v1.5 fix — timezone arithmetic for TIME + DATE combination:** `WeeklyScheduleTemplate.start_time` is a `TIME` column (no timezone). Combining a calendar date with a local time-of-day must use explicit GMT+3 arithmetic or boundary-day slots will have the wrong day-of-week and the 2h advance-booking check will be 3 hours off. Use `luxon` for this:
+>
+> ```tsx
+> import { DateTime } from 'luxon';
+>
+> // Inside the loop for each date × template pair:
+> const slotStart = DateTime.fromObject(
+>   { year: date.year, month: date.month, day: date.day,
+>     hour: template.startTime.getUTCHours(), minute: template.startTime.getUTCMinutes() },
+>   { zone: timezone },  // 'Indian/Antananarivo' (GMT+3)
+> ).toUTC().toJSDate();
+> ```
+>
+> Add `luxon` to the install list: `pnpm add luxon && pnpm add -D @types/luxon`.
+
 **Write unit tests before writing a single integration or controller around this function:**
 
 ```tsx
@@ -1381,16 +1561,31 @@ pnpm add @nestjs/websockets @nestjs/platform-socket.io socket.io
 import {
   WebSocketGateway, WebSocketServer,
   SubscribeMessage, MessageBody, ConnectedSocket,
+  OnGatewayInit,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { ConfigService } from '@nestjs/config';
+import { Logger } from '@nestjs/common';
 
+// Note: process.env.FRONTEND_URL is read at class decoration time (module load), before
+// DI is available. If undefined, Socket.io treats origin:undefined as origin:'*' — all
+// origins permitted. The afterInit() check below catches this at startup, not at runtime.
 @WebSocketGateway({
   namespace: '/availability',
   cors: { origin: process.env.FRONTEND_URL },
 })
-export class AvailabilityGateway {
+export class AvailabilityGateway implements OnGatewayInit {
   @WebSocketServer() server: Server;
+  private readonly logger = new Logger(AvailabilityGateway.name);
+
+  // Called immediately after the gateway is initialized — fail fast if CORS is misconfigured.
+  afterInit(): void {
+    if (!process.env.FRONTEND_URL) {
+      throw new Error(
+        'FRONTEND_URL env var is required for WebSocket CORS. Without it, Socket.io allows all origins.',
+      );
+    }
+    this.logger.log(`AvailabilityGateway initialized. CORS origin: ${process.env.FRONTEND_URL}`);
+  }
 
   // Patient joins a "room" for a specific doctor to receive live slot updates
   @SubscribeMessage('watch-doctor')
@@ -1600,7 +1795,7 @@ DELETE /api/v1/slots/lock/:lock_token
   → Delete from appointments.slot_locks WHERE lock_token = $1 AND user_id = $2
   → Delete Redis key
   → Emit slot-released WebSocket event
-  → 200
+  → 204 No Content  ← DELETE with no response body returns 204, not 200
 
 POST /api/v1/appointments
   Body: { doctor_id, facility_id?, start_time, appointment_type,
@@ -1640,6 +1835,22 @@ PATCH /api/v1/appointments/:id/status
   Body: { status: 'completed' | 'no_show' }
   Guard: @Roles('doctor') + doctorId === req.user.sub
   → 200
+
+POST /api/v1/appointments/:id/confirm
+  Guard: @Roles('doctor') + doctorId === req.user.sub
+  → Update status from 'pending_confirmation' → 'confirmed'
+  → Publish AppointmentConfirmed event (triggers confirmation SMS if not already sent)
+  → 200
+
+POST /api/v1/doctors/:id/reviews
+  Body: { rating: 1-5, comment?: string }
+  Guard: JwtAuthGuard + patient must have a completed appointment with this doctor
+  → Insert review, update DoctorProfile.average_rating and total_reviews atomically
+  → 201
+
+GET /api/v1/doctors/:id/reviews
+  Query: page, limit (default 20)
+  → 200 { data: { items: Review[], meta: { page, total } } }
 ```
 
 ---
@@ -1826,6 +2037,11 @@ async handleAppointmentBooked(event: AppointmentBookedEvent): Promise<void> {
   const appointment = await this.appointmentService.findById(event.appointmentId);
   const msUntilAppt = appointment.startTime.getTime() - Date.now();
 
+  // Track scheduled count. For same-day bookings (< 2h until appointment), ALL three
+  // guards are false — no reminders queue. This is intentional: the confirmation SMS
+  // above is the only notification for same-day bookings. Log it explicitly so ops
+  // can distinguish correct behaviour from a bug.
+  let queuedCount = 0;
   for (const offset of [72 * 3600_000, 24 * 3600_000, 2 * 3600_000]) {
     if (msUntilAppt > offset) {
       await this.smsReminderQueue.add(
@@ -1838,7 +2054,13 @@ async handleAppointmentBooked(event: AppointmentBookedEvent): Promise<void> {
           jobId: `reminder:${event.appointmentId}:${offset}`,
         },
       );
+      queuedCount++;
     }
+  }
+  if (queuedCount === 0) {
+    this.logger.log(
+      `No reminders queued for appointment ${event.appointmentId} — booked less than 2h in advance. Confirmation SMS only.`,
+    );
   }
 }
 

@@ -3,8 +3,9 @@
 **Reviewer:** Senior Backend Engineer (NestJS / REST API)
 **Date:** 2026-03-03
 **Documents reviewed:** `docs/spec.md` (v1.3), `docs/roadmap.md` (v1.4)
+**Implementation sync:** 2026-03-05 — all 17 findings written back to `docs/spec.md` and `docs/roadmap.md` (v1.5)
 
-**17 findings: 2 Critical, 5 High, 5 Medium, 5 Low**
+**17 findings: 2 Critical, 5 High, 5 Medium, 5 Low — all resolved ✅**
 
 ---
 

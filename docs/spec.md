@@ -172,7 +172,7 @@ src/
 │   ├── appointments/
 │   │   ├── domain/          # Appointment entity, booking rules, slot locking
 │   │   ├── application/     # BookAppointment, Cancel, Reschedule
-│   │   ├── infrastructure/  # DB, pessimistic locking via SELECT FOR UPDATE
+│   │   ├── infrastructure/  # DB, atomic slot locking via INSERT ON CONFLICT DO NOTHING
 │   │   └── api/
 │   │
 │   ├── scheduling/
@@ -517,6 +517,8 @@ Ref: [BOOKING_ID]
 - Monitor delivery status via provider webhooks
 - Retry failed SMS up to 3 times with exponential backoff (via BullMQ job retry)
 - Fallback to email if all SMS attempts fail and email is on file
+
+**Same-day booking behaviour:** For appointments booked fewer than 2 hours before the start time, all three reminder offsets (72h, 24h, 2h) are in the past — no reminder jobs are queued. The booking confirmation SMS is the only notification in this case. This is by design and is logged at INFO level to distinguish from a bug.
 
 **Compliance:**
 
@@ -1485,7 +1487,7 @@ On merge to main:   above + manual approval gate + blue-green deploy to producti
 - SMS-first communication for Madagascar — correct market insight
 - PWA + offline support — correct for the connectivity context
 - Mobile-first, Malagasy/French language support — correct
-- Two-layer slot locking (Redis TTL + PostgreSQL FOR UPDATE) — correct concurrency approach
+- Two-layer slot locking (Redis TTL NX + PostgreSQL INSERT ON CONFLICT DO NOTHING) — correct concurrency approach
 
 ### What was changed
 
