@@ -1,4 +1,4 @@
-technical-roadmap-v1.4
+technical-roadmap-v1.5
 
 # 🗺️ Technical Roadmap — Step-by-Step Build Guide
 
@@ -343,6 +343,8 @@ pnpm add class-validator class-transformer
 pnpm add cookie-parser helmet
 pnpm add @nestjs/event-emitter
 pnpm add @bull-board/api @bull-board/nestjs @bull-board/express express-basic-auth
+pnpm add @nestjs/websockets @nestjs/platform-socket.io socket.io
+# Do NOT add @types/socket.io — socket.io v4 ships its own types; the old package targets v2 and causes conflicts
 pnpm add -D @types/node @types/passport-jwt @types/cookie-parser typescript ts-node
 npx prisma init --datasource-provider postgresql
 ```
@@ -363,7 +365,8 @@ apps/api/src/
 │   ├── scheduling/      (same sub-structure)
 │   ├── notifications/   (same sub-structure)
 │   ├── video/           (same sub-structure)
-│   └── analytics/       (same sub-structure)
+│   ├── analytics/       (same sub-structure)
+│   └── payments/        (stub only — Phase 2)
 ├── shared/
 │   ├── events/          ← domain event definitions
 │   ├── guards/          ← JwtAuthGuard, RolesGuard
@@ -1519,7 +1522,7 @@ async lockSlot(doctorId: string, slotTime: Date, userId: string): Promise<string
 ```
 
 > ⚠️ **v1.4 addition — slot-lock queue must be registered:** `SlotLockingService` injects `@InjectQueue('slot-lock')` but the queue must be registered with `BullModule.registerQueue()` in the module that provides `SlotLockingService` (the `AppointmentsModule` or `SchedulingModule`). Without this, NestJS throws `No provider for Queue(slot-lock)` at startup.
-> 
+>
 
 ```tsx
 // appointments.module.ts (or scheduling.module.ts — wherever SlotLockingService lives)
@@ -1529,51 +1532,114 @@ async lockSlot(doctorId: string, slotTime: Date, userId: string): Promise<string
       { name: 'slot-lock' },
     ),
   ],
-  providers: [SlotLockingService, /* ... */],
+  providers: [SlotLockingService, SlotLockWorker, /* ... */],
   exports: [SlotLockingService],
 })
 export class AppointmentsModule {}
+```
+
+> ⚠️ **v1.5 addition — `SlotLockWorker` must be defined:** `lockSlot()` enqueues a `release-expired-lock` job but no `@Processor('slot-lock')` worker existed in previous versions. Without it BullMQ moves the job to the failed queue and the slot is never released after expiry.
+>
+
+```tsx
+// appointments/infrastructure/slot-lock.worker.ts
+import { Processor, WorkerHost } from '@nestjs/bullmq';
+import { Job } from 'bullmq';
+
+@Processor('slot-lock')
+export class SlotLockWorker extends WorkerHost {
+  constructor(
+    private readonly slotLockRepo: SlotLockRepository,
+    @Inject(REDIS_CLIENT) private readonly redis: Redis,
+    private readonly availabilityGateway: AvailabilityGateway,
+  ) { super(); }
+
+  async process(job: Job<{ doctorId: string; slotTime: string; lockToken: string }>): Promise<void> {
+    const { doctorId, slotTime, lockToken } = job.data;
+    // Returns 0 if the lock was already consumed by a successful booking — that is the happy path.
+    const deleted = await this.slotLockRepo.deleteLockByToken(lockToken);
+    if (deleted === 0) return;
+    // Lock was not consumed — it genuinely expired. Release the Redis key and emit the slot update.
+    await this.redis.del(`slot_lock:${doctorId}:${slotTime}`);
+    this.availabilityGateway.emitSlotUpdate(doctorId, 'slot-released', slotTime);
+  }
+}
 ```
 
 ---
 
 ### ✅ Step 20 — Booking endpoints
 
-> ⚠️ **v1.3 fix — atomic lock validation + delete:** The lock validation check and the `DELETE FROM slot_locks` must happen in the same database transaction. Performing them separately creates a TOCTOU (time-of-check/time-of-use) race: another request could delete the lock between the check and the delete, resulting in two appointments booked for the same slot. Both operations must be inside `prisma.$transaction([...])`.
-> 
+> ⚠️ **v1.3 fix — atomic lock validation + delete:** The lock validation check and the `DELETE FROM slot_locks` must happen in the same database transaction. Both operations must be inside `prisma.$transaction(async (tx) => { ... })` — the **interactive callback form**. The array form `prisma.$transaction([...])` is a batch, not a true serializable transaction; mixing `tx.$queryRaw` with `tx.model.create` in the callback form guarantees they share the same connection and serialization context.
+>
+> ⚠️ **v1.5 addition — ownership checks required on all appointment reads/writes:** `GET /appointments/:id`, `POST /appointments/:id/cancel`, `POST /appointments/:id/reschedule` must verify `patientId === req.user.sub` (patient) or `doctorId === req.user.sub` (doctor) before returning or mutating data. This check belongs in `AppointmentService`, not the controller. Without it, any authenticated user can read or cancel any other patient's medical appointment (IDOR).
+>
+> ⚠️ **v1.5 addition — cancel and reschedule are separate endpoints:** They have different advance-notice windows (24h vs 48h), different required parameters, and emit different domain events. A single `PATCH /appointments/:id` cannot enforce both sets of rules simultaneously.
 
 ```
+POST /api/v1/auth/resend-otp
+  Body: { phone_number }
+  Throttle: 3 requests per phone per hour (PhoneThrottlerGuard — see Step 33)
+  → Overwrites otp:{phone} Redis key, resends SMS via SmsAdapter
+  → 200 { data: { message: "OTP resent", expires_in_seconds: 600 } }
+
+GET /api/v1/users/me
+  Header: Authorization: Bearer <token>
+  → Returns user profile for session restore after page refresh
+  → 200 { data: { id, userType, firstName, lastName, phoneNumber, profilePhotoUrl, preferredLanguage } }
+
 POST /api/v1/slots/lock
   Body: { doctor_id, slot_time, facility_id? }
   → Acquire Redis lock (NX)
   → Acquire DB lock (INSERT ... ON CONFLICT DO NOTHING)
-  → Schedule BullMQ cleanup job
+  → Schedule BullMQ cleanup job (SlotLockWorker)
   → Emit slot-locked WebSocket event
-  → Return { lock_token, expires_at }
+  → 201 { data: { lock_token, expires_at } }
 
 DELETE /api/v1/slots/lock/:lock_token
   → Delete from appointments.slot_locks WHERE lock_token = $1 AND user_id = $2
   → Delete Redis key
   → Emit slot-released WebSocket event
-  → Return 200
+  → 200
 
 POST /api/v1/appointments
   Body: { doctor_id, facility_id?, start_time, appointment_type,
-          reason_for_visit, is_first_visit, lock_token, patient_info? }
-  → ATOMIC DB TRANSACTION:
-      1. DELETE FROM appointments.slot_locks
-         WHERE lock_token = $1 AND user_id = $2 AND expires_at > NOW()
-         RETURNING id  -- if 0 rows → lock expired or stolen → throw 409
-      2. INSERT INTO appointments.appointments (..., status: 'confirmed')
-         RETURNING *
+          reason_for_visit, is_first_visit, lock_token }
+  → ATOMIC DB TRANSACTION (interactive callback form):
+      tx.$queryRaw`DELETE FROM appointments.slot_locks
+                   WHERE lock_token = ${lockToken}
+                     AND user_id    = ${userId}::uuid
+                     AND expires_at > NOW()
+                   RETURNING id`
+      -- if 0 rows → lock expired or stolen → throw ConflictException('LOCK_EXPIRED_OR_STOLEN')
+      tx.appointment.create({ data: { ...appointmentData, status: 'pending_confirmation' } })
   → Delete Redis slot_lock key (best-effort, after transaction commits)
   → Publish AppointmentBooked domain event
-  → Return 201 { appointment_id, booking_reference }
+  → 201 { data: { appointment_id, booking_reference } }
+  Note: status defaults to 'pending_confirmation'. Auto-confirm (doctor preference) is a Phase 2 feature.
 
-GET  /api/v1/appointments          List (filtered by auth user role)
-GET  /api/v1/appointments/:id      Detail
-PATCH /api/v1/appointments/:id     Reschedule or cancel
-PATCH /api/v1/appointments/:id/status  Doctor: mark complete / no-show
+GET  /api/v1/appointments          List (filtered by auth user role — patient sees own, doctor sees own)
+GET  /api/v1/appointments/:id      Detail — OWNERSHIP CHECK required (see note above)
+POST /api/v1/appointments/:id/cancel
+  Body: { reason? }
+  Guard: 24-hour advance-notice check
+  → OWNERSHIP CHECK: patientId === req.user.sub
+  → Update status = 'cancelled', set cancellation_reason, cancelled_by
+  → Publish AppointmentCancelled event (triggers reminder job cancellation — see Step 25)
+  → 200
+
+POST /api/v1/appointments/:id/reschedule
+  Body: { lock_token, new_start_time }
+  Guard: 48-hour advance-notice check
+  → OWNERSHIP CHECK: patientId === req.user.sub
+  → Atomic: delete old lock, create new appointment, release old slot
+  → Publish AppointmentRescheduled event
+  → 200
+
+PATCH /api/v1/appointments/:id/status
+  Body: { status: 'completed' | 'no_show' }
+  Guard: @Roles('doctor') + doctorId === req.user.sub
+  → 200
 ```
 
 ---
@@ -1682,6 +1748,8 @@ Provider selected by config — never `if/else` in business logic:
 ### ✅ Step 24 — Notification queue workers
 
 > ⚠️ **v1.3 addition — BullMQ queue registration in module:** Queues must be registered with `BullModule.registerQueue()` in the module that uses them before workers can consume them. Without this, `@InjectQueue('sms-immediate')` throws `No provider for Queue(sms-immediate)`.
+
+> ⚠️ **v1.5 fix — BullMQ retry options belong on the job, not the Worker:** `attempts` and `backoff` are job-level options passed to `.add()`. Putting them in the Worker constructor options is silently ignored — jobs exhausted with zero retries and the on-failure handler never fires. Additionally, reminder jobs must use deterministic `jobId`s (e.g. `reminder:${appointmentId}:${offsetMs}`) so they can be retrieved by ID and cancelled when an appointment is cancelled. Without a `jobId`, `queue.getJob(id)` cannot find the job.
 > 
 
 ```tsx
@@ -1701,14 +1769,15 @@ export class NotificationsModule {}
 Set up BullMQ queues and workers in `modules/notifications/infrastructure/`:
 
 ```tsx
-// Worker config (for both queues):
-const workerOptions = {
+// Retry options go on the JOB (.add() call), not the Worker constructor.
+// Worker constructor options are for concurrency/rate-limiting, not retries.
+export const SMS_JOB_OPTIONS: JobsOptions = {
   attempts: 3,
-  backoff: { type: 'exponential', delay: 5000 },
-  // Retry timing: 5s → 25s → 125s between attempts
+  backoff: { type: 'exponential', delay: 5_000 },
+  // Retry timing: 5 s → 25 s → 125 s between attempts
 };
 
-// On exhausted retries:
+// On exhausted retries (worker's `onFailed` or a separate failed event listener):
 //   1. Log failure to notifications.notification_log (status: 'failed')
 //   2. If email on file → queue email fallback job
 //   3. Alert via Sentry if failure rate exceeds 10%
@@ -1751,15 +1820,23 @@ Wire the domain event bus in `modules/notifications/application/`:
 
 @OnEvent('appointment.booked')
 async handleAppointmentBooked(event: AppointmentBookedEvent): Promise<void> {
-  await this.smsImmediateQueue.add('confirmation', { appointmentId: event.appointmentId });
+  // Confirmation SMS — fire immediately
+  await this.smsImmediateQueue.add('confirmation', { appointmentId: event.appointmentId }, SMS_JOB_OPTIONS);
+
   const appointment = await this.appointmentService.findById(event.appointmentId);
   const msUntilAppt = appointment.startTime.getTime() - Date.now();
+
   for (const offset of [72 * 3600_000, 24 * 3600_000, 2 * 3600_000]) {
     if (msUntilAppt > offset) {
       await this.smsReminderQueue.add(
         'reminder',
         { appointmentId: event.appointmentId, offsetMs: offset },
-        { delay: msUntilAppt - offset },
+        {
+          ...SMS_JOB_OPTIONS,
+          delay: msUntilAppt - offset,
+          // Deterministic jobId: enables lookup + cancellation when appointment is cancelled
+          jobId: `reminder:${event.appointmentId}:${offset}`,
+        },
       );
     }
   }
@@ -1767,7 +1844,24 @@ async handleAppointmentBooked(event: AppointmentBookedEvent): Promise<void> {
 
 // AppointmentCancelled event → triggers:
 //   1. sms-immediate: cancellation SMS to patient
-//   2. Remove pending reminder jobs for this appointment
+//   2. Remove all pending reminder jobs for this appointment
+
+@OnEvent('appointment.cancelled')
+async handleAppointmentCancelled(event: AppointmentCancelledEvent): Promise<void> {
+  // 1. Cancellation SMS
+  await this.smsImmediateQueue.add(
+    'cancellation',
+    { appointmentId: event.appointmentId },
+    SMS_JOB_OPTIONS,
+  );
+
+  // 2. Cancel pending reminder jobs using deterministic jobIds
+  // Without jobId on enqueue, getJob() returns null and reminders fire after cancellation.
+  for (const offset of [72 * 3600_000, 24 * 3600_000, 2 * 3600_000]) {
+    const job = await this.smsReminderQueue.getJob(`reminder:${event.appointmentId}:${offset}`);
+    if (job) await job.remove();
+  }
+}
 
 // AppointmentCompleted event → triggers:
 //   1. sms-immediate: "Please rate Dr. X" SMS with link
@@ -1804,6 +1898,8 @@ In `NotificationService`, select the template file based on the patient’s `pre
 
 ### ✅ Step 26 — Notification log
 
+> ⚠️ **v1.5 addition — `bullmq_job_id` field:** The notification log must store the BullMQ job ID at enqueue time. This is required to correlate log entries with queued jobs for observability (visible in Bull Board) and to support cancellation auditing (confirm the job was removed when appointment was cancelled).
+
 Every SMS attempt (success or failure) logged to `notifications.notification_log`:
 
 ```tsx
@@ -1813,6 +1909,7 @@ Every SMS attempt (success or failure) logged to `notifications.notification_log
   provider_used, provider_message_id,
   status: 'queued' | 'sent' | 'delivered' | 'failed',
   attempt_count, last_attempt_at,
+  bullmq_job_id,   // TEXT — stored at enqueue time; null for immediate jobs with auto-generated IDs
   created_at
 }
 ```
@@ -1851,13 +1948,22 @@ jobs:
           --health-cmd pg_isready
           --health-interval 5s
           --health-retries 5
+        ports:
+          - 5432:5432
       redis:
         image: redis:7-alpine
+        # CRITICAL: --maxmemory-policy noeviction is a Redis server arg.
+        # It MUST go in `command:`, not `options:`. The `options:` field is for
+        # Docker container args (health checks, etc.) — Redis server args in
+        # `options:` are silently ignored, leaving allkeys-lru as the policy,
+        # which causes BullMQ jobs to be evicted under memory pressure.
+        command: redis-server --maxmemory 256mb --maxmemory-policy noeviction
         options: >-
           --health-cmd "redis-cli ping"
           --health-interval 5s
-          --maxmemory 256mb
-          --maxmemory-policy noeviction
+          --health-retries 5
+        ports:
+          - 6379:6379
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -1865,7 +1971,7 @@ jobs:
           node-version: '20'
       - uses: pnpm/action-setup@v3
         with:
-          version: 8
+          version: 10   # Must match the version in the repo (check engines.pnpm in root package.json)
       - run: pnpm install --frozen-lockfile
       - run: pnpm turbo lint
       - run: pnpm turbo test
@@ -1883,12 +1989,15 @@ jobs:
 `.github/workflows/deploy.yml` — runs on push to `main`:
 
 > ⚠️ **v1.1 addition:** The original workflow was missing DigitalOcean Container Registry authentication. Without `doctl registry login`, `docker push` will fail with an authentication error. Also: `docker compose exec api npx prisma migrate deploy` requires `prisma` to be installed in the production image — use the `prisma` binary from `node_modules/.bin/prisma` or include a dedicated `migrate` service. The corrected workflow is below.
-> 
+
+> ⚠️ **v1.5 fix — deploy must gate on CI success:** Triggering deploy on `push: branches: [main]` runs the deploy workflow in parallel with the CI workflow — a broken push deploys before tests have even run. Use `workflow_run` to make the deploy wait for the CI workflow to succeed first. Without this, a failing test suite on main can push broken code to production.
 
 ```yaml
 name: Deploy
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
 
 env:
@@ -1897,6 +2006,8 @@ env:
 
 jobs:
   deploy:
+    # Only run if the triggering CI workflow succeeded
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -2319,9 +2430,36 @@ import { Throttle, SkipThrottle } from '@nestjs/throttler';
 @Post('login')
 async login() {}
 
-@Throttle({ default: { ttl: 60_000, limit: 5 } })    // 5/min on OTP endpoint
+@Throttle({ default: { ttl: 3_600_000, limit: 3 } }) // 3/hour on OTP request (matches resend-otp)
 @Post('request-otp')
 async requestOtp() {}
+
+// verify-otp MUST be throttled to prevent OTP brute force.
+// A 6-digit OTP has 1,000,000 combinations — unthrottled, an attacker can
+// exhaust the space in seconds. IP-based throttling is insufficient because
+// Madagascar carriers (Orange, Telma) use carrier-grade NAT — thousands of
+// users share one IP. Use PhoneThrottlerGuard (keyed on phone_number in body).
+@UseGuards(PhoneThrottlerGuard)
+@Throttle({ default: { ttl: 600_000, limit: 5 } })   // 5 attempts per phone per 10 minutes
+@Post('verify-otp')
+async verifyOtp() {}
+```
+
+`PhoneThrottlerGuard` — keys the throttle on the phone number in the request body instead of the client IP:
+
+```tsx
+// auth/api/guards/phone-throttler.guard.ts
+import { Injectable } from '@nestjs/common';
+import { ThrottlerGuard } from '@nestjs/throttler';
+
+@Injectable()
+export class PhoneThrottlerGuard extends ThrottlerGuard {
+  // Override the tracker key: use phone_number from request body, not IP.
+  // This survives carrier-grade NAT where many users share the same IP.
+  protected async getTracker(req: Record<string, any>): Promise<string> {
+    return req.body?.phone_number ?? req.ip;
+  }
+}
 ```
 
 ---
@@ -2331,10 +2469,14 @@ async requestOtp() {}
 Run through this before any public launch:
 
 - [ ]  All DTOs have `class-validator` decorators — no unvalidated inputs
-- [ ]  Parameterized queries everywhere — run `grep -rn '\`.*${’ src/` and audit every hit for SQL injection risk
+- [ ]  Parameterized queries everywhere — run `grep -rn ‘\`.*${‘ src/` and audit every hit for SQL injection risk
+- [ ]  `$queryRawUnsafe` banned — add to CI: `grep -rn ‘\$queryRawUnsafe’ apps/api/src/ && exit 1`. All dynamic queries must use `$queryRaw` with Prisma’s tagged template literal, which parameterizes automatically
+- [ ]  IDOR checks on all patient-scoped endpoints — `patientId` in DB row must equal `req.user.sub`; add `appointmentRepo.findOneByIdAndPatient(id, userId)` pattern and verify the check exists in every appointment controller method
 - [ ]  `helmet()` middleware enabled in `main.ts` (sets X-Frame-Options, CSP, HSTS, etc.)
 - [ ]  CORS configured to allow only your frontend domains (`app.enableCors` in `main.ts`)
-- [ ]  No secrets in git: `git grep -iE "password|secret|apikey|token" -- '*.ts' '*.json'`
+- [ ]  No secrets in git: `git grep -iE "password|secret|apikey|token" -- ‘*.ts’ ‘*.json’`
+- [ ]  PII scrubbed from logs and Sentry — configure `beforeSend` in Sentry to strip `phone_number`, `otp`, `password`, `refresh_token` fields from breadcrumbs and event data; verify that NestJS logger does not print request bodies on auth routes
+- [ ]  Admin controller has application-level guard — `@UseGuards(JwtAuthGuard, RolesGuard)` + `@Roles(‘admin’)` on the controller class (not just individual methods); Nginx IP allowlist alone is not sufficient defense-in-depth
 - [ ]  All S3/Spaces objects served via pre-signed URLs (no public bucket access)
 - [ ]  Admin routes behind IP allowlist in Nginx
 - [ ]  SSH password auth disabled on all Droplets (`PasswordAuthentication no` in `/etc/ssh/sshd_config`)
@@ -2406,9 +2548,13 @@ export default function () {
   const lockRes = http.post(
     `${BASE_URL}/slots/lock`,
     JSON.stringify({ doctor_id: doctorId, slot_time: slotTime }),
+    // v1.5 fix: previously the `headers` object was missing its closing `}`,
+    // and `tags` was passed as a second params argument (invalid). Both must
+    // be top-level properties of the single params object.
     {
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-    { tags: { name: 'slot-lock' } },
+      tags: { name: 'slot-lock' },
+    },
   );
   check(lockRes, { 'lock 201 or 409': (r) => r.status === 201 || r.status === 409 });
 
@@ -2519,7 +2665,19 @@ loki.write "grafana_cloud" {
 
 ### ✅ Step 37 — Doctor onboarding + admin panel
 
+> ⚠️ **v1.5 fix — admin controller must have an application-level guard:** The admin endpoints were listed without a guard decorator. An Nginx IP allowlist is a network-level control only — any request that reaches the NestJS process (e.g., from within the Docker network, or if Nginx is misconfigured) would have unrestricted access. The controller class must carry `@UseGuards(JwtAuthGuard, RolesGuard)` + `@Roles('admin')` so that even internal requests require a valid admin JWT.
+
 Build a minimal admin UI (simple HTML table, no fancy design needed):
+
+```tsx
+// admin/api/admin-doctors.controller.ts
+@Controller('admin/doctors')
+@UseGuards(JwtAuthGuard, RolesGuard)  // Application-level guard — required on the class, not just methods
+@Roles('admin')
+export class AdminDoctorsController {
+  // ...
+}
+```
 
 ```
 GET  /api/v1/admin/doctors/pending    List unverified doctor registrations
@@ -2795,11 +2953,11 @@ Critical bugs fixed: (1) `SELECT FOR UPDATE` on wrong table — replaced with `I
 
 ---
 
-*Roadmap version 1.4 · February 2026 · Derived from Technical Specification v1.3*
+*Roadmap version 1.5 · March 2026 · Derived from Technical Specification v1.3*
 
 ---
 
-### v1.4 Changes (this review)
+### v1.4 Changes (retained)
 
 | # | Location | v1.3 | v1.4 | Reason |
 | --- | --- | --- | --- | --- |
@@ -2812,3 +2970,20 @@ Critical bugs fixed: (1) `SELECT FOR UPDATE` on wrong table — replaced with `I
 | 7 | Step 35 — k6 script |  Authorization: `Bearer${token}`  (missing space) |  Authorization: `Bearer ${token}`  | Produces `"BearerXXX"` — all authenticated k6 requests return 401; load test passes vacuously |
 | 8 | Step 36 — Grafana Alloy config | Docker metrics scrape at `localhost:9323` with no prerequisite | Added note to enable Docker metrics endpoint in `/etc/docker/daemon.json` first | Docker does not expose a Prometheus metrics endpoint by default; without enabling it, Alloy scrapes nothing |
 | 9 | Step 39 — React Native install | `@notifee/react-native` only | Added `@react-native-firebase/app` and `@react-native-firebase/messaging` | Notifee requires the Firebase messaging package for FCM message receipt; without it push notifications fail silently on device |
+
+### v1.5 Changes (this review)
+
+| # | Location | v1.4 | v1.5 | Reason |
+| --- | --- | --- | --- | --- |
+| 1 | Step 24 — BullMQ worker config | `workerOptions` object with `attempts`/`backoff` implied for Worker constructor | `SMS_JOB_OPTIONS` const passed to every `.add()` call | BullMQ retry options are job-level, not Worker-level. Worker constructor options control concurrency/rate-limiting. Job-level options in the Worker are silently ignored — all retries fail on first attempt |
+| 2 | Step 25 — `handleAppointmentBooked` reminder jobs | No `jobId` on reminder jobs | Deterministic `jobId: reminder:${appointmentId}:${offsetMs}` on every reminder add | Without a stored `jobId`, `queue.getJob(id)` cannot find the job; reminder cancellation on appointment cancel is impossible |
+| 3 | Step 25 — `handleAppointmentCancelled` | Comment only: "Remove pending reminder jobs" | Full implementation: `getJob(deterministic-id)` + `job.remove()` for each offset | Comment was not implementable — no jobId pattern, no code shown; reminder jobs would fire after the appointment was already cancelled |
+| 4 | Step 26 — `notification_log` schema | Missing `bullmq_job_id` field | Added `bullmq_job_id TEXT` column | Required to correlate log rows with BullMQ jobs for observability and cancellation auditing |
+| 5 | Step 27 — CI Redis service | `--maxmemory-policy noeviction` in `options:` block | Moved to `command: redis-server --maxmemory 256mb --maxmemory-policy noeviction`; added `ports: - 6379:6379` | `options:` maps to Docker container flags (health checks), not Redis server args. Redis server args in `options:` are silently ignored, leaving default eviction policy which drops BullMQ jobs |
+| 6 | Step 27 — CI pnpm version | `version: 8` | `version: 10` | pnpm v10 is the project's development version (matches lockfile format); v8 produces a lockfile version mismatch error on `--frozen-lockfile` |
+| 7 | Step 27 — deploy.yml trigger | `on: push: branches: [main]` | `on: workflow_run: workflows: ["CI"] types: [completed]` + `if: conclusion == 'success'` | Deploy and CI ran in parallel — a broken push would deploy to production before tests even finished. Deploy must gate on CI success |
+| 8 | Step 33 — `verify-otp` throttle | No throttle on OTP verification endpoint | Added `@Throttle({ default: { ttl: 600_000, limit: 5 } })` + `@UseGuards(PhoneThrottlerGuard)` | 6-digit OTP has 1,000,000 combinations; unthrottled verification allows full brute force in seconds |
+| 9 | Step 33 — OTP throttle keying | IP-based ThrottlerGuard on auth routes | `PhoneThrottlerGuard` with `getTracker()` keyed on `req.body.phone_number` | Madagascar carriers (Orange, Telma) use carrier-grade NAT — thousands of subscribers share one IP. IP-based throttle blocks innocent users while attackers on the same carrier are also blocked; phone-keyed throttle targets the actual attack vector |
+| 10 | Step 34 — security checklist | Missing `$queryRawUnsafe` ban, IDOR check, PII scrubbing, admin guard | Added all four items with implementation guidance | Critical security controls were absent from the audit checklist: raw SQL injection via `$queryRawUnsafe`, patient record access without ownership check, PII leakage to Sentry logs, and unguarded admin routes |
+| 11 | Step 35 — k6 `http.post` params | `headers` object missing closing `}`, `tags` passed as second argument | Fixed: `headers` and `tags` as top-level properties of a single params object | JavaScript syntax error — k6 would throw at parse time; the load test could not run at all |
+| 12 | Step 37 — admin controller | No guard shown on admin endpoints | Added `@UseGuards(JwtAuthGuard, RolesGuard)` + `@Roles('admin')` on controller class | Nginx IP allowlist is network-level only; requests reaching the NestJS process from within the Docker network (or misconfigured proxy) would have unrestricted admin access without an application-level guard |

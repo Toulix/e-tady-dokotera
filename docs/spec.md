@@ -2,11 +2,14 @@ Healthcare Booking Platform - Technical Specification
 
 ## Madagascar Medical Appointment System
 
-**Version:** 1.2 (Second Architect Review)  
+**Version:** 1.3 (Third Architect Review)
 
-**Date:** February 2026  
+**Date:** March 2026
 
 **Target Market:** Madagascar
+
+> ⚠️ **Review Note (v1.3):** Third architect review. Corrections applied: (1) §3.1.3 concurrency section corrected — `SELECT FOR UPDATE` replaced with `INSERT ... ON CONFLICT DO NOTHING` (the roadmap's v1.1 fix was never reflected back in the spec); (2) §5.1 User and Facility entities corrected from `TIMESTAMP` to `TIMESTAMPTZ`; (3) §2.3 `payments` schema added to schema list; (4) §2.3 AWS instance type replaced with DigitalOcean equivalent; (5) §2.6 cost total corrected from ~$210–350 to ~$435–$1,035 (now consistent with §16.2); (6) §2.1 SMS provider "Yas" reverted to "Telma" (unexplained rename); (7) §8.1 Telma/Airtel providers marked as Phase 2 deferral; (8) §8.3 Google Calendar marked as Phase 2; (9) §3.2.4 EHR Lite marked as Phase 2; (10) §10.4 USSD roadmap entry confirmed added; (11) §13.2 Grafana Alloy named as the metrics/log collection agent.
+>
 
 > ⚠️ **Review Note (v1.2):** This document has been reviewed a second time to address cross-document inconsistencies with the Technical Roadmap. Three targeted corrections were made: (1) refresh token delivery mechanism clarified to mandate `Set-Cookie` header (never response body), (2) Prisma's incompatibility with native PostGIS `GEOMETRY` types documented with the required `Unsupported()` workaround, (3) WebSocket packages added to the technology stack. All other v1.1 content is retained unchanged.
 > 
@@ -247,6 +250,7 @@ CREATE SCHEMA scheduling;    -- weekly_templates, schedule_exceptions
 CREATE SCHEMA notifications; -- notification_log, preferences
 CREATE SCHEMA video;         -- sessions, consent_records
 CREATE SCHEMA analytics;     -- events, aggregates (append-only)
+CREATE SCHEMA payments;      -- payment_events, transactions (Phase 2)
 
 -- Cross-schema joins: allowed ONLY for read-only reporting queries in analytics
 -- Write operations always go through the owning module's service interface
@@ -254,7 +258,7 @@ CREATE SCHEMA analytics;     -- events, aggregates (append-only)
 
 **Scaling path for the database:**
 
-- **Phase 1 (MVP):** Single primary instance (db.t3.medium, ~$50/month)
+- **Phase 1 (MVP):** Single primary instance (DigitalOcean `db-s-1vcpu-2gb`, ~$25/month)
 - **Phase 2 (Growth):** Add read replica; analytics and reporting queries routed there
 - **Phase 3 (Scale):** PgBouncer connection pooling; partition appointments table by `start_time` (range partitioning by month)
 - **Phase 4 (Extract):** If a module becomes a bottleneck, its schema can be migrated to a standalone database when extracted as a microservice
@@ -308,7 +312,8 @@ CREATE SCHEMA analytics;     -- events, aggregates (append-only)
 
 **Frontend:**
 
-- **Framework:** React 18 with TypeScript
+- **Framework:** React 18 with TypeScript.
+- **Styling:** Tailwind CSS.
 - **State Management:** Zustand — lightweight and sufficient. ~~Redux Toolkit~~ — removed as an option to eliminate ambiguity. Zustand has a fraction of the boilerplate and is adequate for this application's state complexity.
 - **Mobile:** React Native (single codebase for iOS + Android). ~~Flutter~~ — removed. React Native is the correct choice given the team already uses React/TypeScript. Flutter would require learning Dart, splitting the team's mental model, and duplicating component logic.
 - **Maps:** OpenStreetMap with react-leaflet (zero cost). Google Maps available as a swap via the adapter pattern if needed.
@@ -406,10 +411,12 @@ CREATE SCHEMA analytics;     -- events, aggregates (append-only)
 | Video (Jitsi) | ~$200 | ~$40 (small Droplet) |
 | Object Storage | — | ~$20 (DO Spaces) |
 | CDN/WAF | ~$200 | ~$20 (Cloudflare Pro) |
-| **Total/month** | **~$2,000–5,000** | **~$210–350** |
-| **6-month cost** | **~$12,000–30,000** | **~$1,260–2,100** |
+| **Total/month** | **~$2,000–5,000** | **~$435–$1,035** |
+| **6-month cost** | **~$12,000–30,000** | **~$2,600–$6,200** |
 
-**Saving over 6-month MVP: ~$10,000–28,000**
+**Saving over 6-month MVP: ~$10,000–28,000** (see §16.2 for full breakdown)
+
+> ⚠️ **v1.3 correction:** Previous versions showed ~$210–350/month total, which excluded SMS costs ($200–800/month volume-dependent) and understated the database cost. §16.2's detailed table (~$435–$1,035/month) is the correct figure.
 
 ---
 
@@ -469,11 +476,15 @@ CREATE SCHEMA analytics;     -- events, aggregates (append-only)
 
 **Concurrency & Locking:**
 
-- Slot lock: Redis key `slot_lock:{doctor_id}:{slot_datetime}` with 10-minute TTL
-- Booking confirmation: PostgreSQL `SELECT FOR UPDATE` on the target slot row to prevent race condition if Redis lock races
+- Slot lock: Redis key `slot_lock:{doctor_id}:{slot_datetime_iso8601}` with 10-minute TTL (use `.toISOString()` for the datetime component — UTC ISO 8601 required to avoid key mismatches)
+- Booking confirmation: `INSERT INTO appointments.slot_locks (...) ON CONFLICT (doctor_id, slot_time) DO NOTHING` — exactly one of two concurrent inserts wins; the loser receives a unique constraint error. This is the hard integrity guarantee.
+- The lock-validation DELETE and appointment INSERT execute in a single `prisma.$transaction(async (tx) => { ... })` callback — the interactive transaction form guarantees both operations share the same PostgreSQL connection and serialization context.
 - Slot lock expiry publishes `SlotLockExpired` domain event → Appointments module releases the hold
 
-> 🔧 **Architect note:** Two-layer locking (Redis TTL + PostgreSQL FOR UPDATE) is the correct pattern here. Redis handles the UX hold ("slot reserved for 10 minutes"), PostgreSQL handles the transactional integrity guarantee. Never rely on Redis alone for financial/booking consistency.
+> ⚠️ **v1.3 correction:** Previous versions of this section said *"PostgreSQL `SELECT FOR UPDATE` on the target slot row."* That is wrong for two reasons: (1) it locks the doctor's entire schedule template row, serializing all concurrent bookings for that doctor; (2) `SELECT FOR UPDATE` on `scheduling.weekly_templates` does not prevent duplicate rows in `appointments.slot_locks`. The correct pattern — `INSERT ... ON CONFLICT DO NOTHING` with a `UNIQUE(doctor_id, slot_time)` constraint — was established in roadmap v1.1 but never reflected back here.
+>
+
+> 🔧 **Architect note:** Two-layer locking is correct: Redis is the UX hold ("slot reserved for 10 minutes"); PostgreSQL's unique constraint is the transactional integrity guarantee. Never rely on Redis alone for booking consistency — it can be evicted or fail.
 > 
 
 #### 3.1.4 Patient Dashboard
@@ -580,6 +591,8 @@ Ref: [BOOKING_ID]
 - iCal format export
 - Import external events (conferences, training)
 
+> ⚠️ **v1.3 deferral:** Google Calendar two-way sync (OAuth 2.0) is **Phase 2**. No roadmap step implements it in Phase 0–10. See also §8.3. iCal export (client-side `.ics` generation) remains in Phase 1 MVP scope.
+
 ---
 
 #### 3.2.3 Appointment Management
@@ -643,6 +656,8 @@ Ref: [BOOKING_ID]
 - Audit logs for all record accesses
 - Encryption at rest and in transit
 - Patient consent management
+
+> ⚠️ **v1.3 deferral:** EHR Lite (SOAP notes, ICD-10, prescription generation, lab results) is **Phase 2**. No data model exists for `visit_notes` or `prescriptions` in the current spec §5 or roadmap. The `Appointment.notes: TEXT` field is a temporary placeholder. A `visit_notes` table with SOAP structure and `icd10_codes TEXT[]` must be designed before EHR Lite implementation begins.
 
 ---
 
@@ -911,9 +926,9 @@ Ref: [BOOKING_ID]
   preferred_language: ENUM('malagasy', 'french', 'english') DEFAULT 'malagasy'
   is_active: BOOLEAN DEFAULT true
   is_verified: BOOLEAN DEFAULT false
-  last_login_at: TIMESTAMP | NULL
-  created_at: TIMESTAMP
-  updated_at: TIMESTAMP
+  last_login_at: TIMESTAMPTZ | NULL
+  created_at: TIMESTAMPTZ
+  updated_at: TIMESTAMPTZ
 }
 ```
 
@@ -963,8 +978,8 @@ Ref: [BOOKING_ID]
   opening_hours: JSONB  // { monday: { open: "08:00", close: "18:00" }, ... }
   photos: TEXT[] | NULL
   is_verified: BOOLEAN DEFAULT false
-  created_at: TIMESTAMP
-  updated_at: TIMESTAMP
+  created_at: TIMESTAMPTZ
+  updated_at: TIMESTAMPTZ
 }
 ```
 
@@ -1193,10 +1208,10 @@ POST /api/v1/consultations/:appointment_id/end     End session, save metadata
 
 **Provider hierarchy (adapter pattern — all implement the same `SmsProvider` interface):**
 
-1. Orange Madagascar API
-2. Telma SMS Gateway
-3. Airtel Madagascar
-4. Africa's Talking (international fallback — preferred for African markets over Twilio)
+1. Orange Madagascar API *(Phase 1 MVP)*
+2. Telma SMS Gateway *(Phase 2 — deferred; roadmap Step 23 implements Orange + Africa's Talking only)*
+3. Airtel Madagascar *(Phase 2 — deferred)*
+4. Africa's Talking (international fallback — preferred for African markets over Twilio) *(Phase 1 MVP)*
 
 **Requirements:** Delivery webhooks, retry up to 3× with exponential backoff, Malagasy Unicode support, message batching for cost optimization.
 
@@ -1207,6 +1222,8 @@ Mobile Money: Orange Money, MVola (Telma), Airtel Money. All via adapter pattern
 ### 8.3 Calendar Integration
 
 Google Calendar two-way sync for doctors (OAuth 2.0). iCal export for patients. Microsoft Outlook/Exchange support deferred to Phase 2.
+
+> ⚠️ **v1.3 deferral:** Google Calendar OAuth two-way sync is **Phase 2** — no roadmap step implements it. iCal export (client-side `.ics` file generation) is Phase 1 MVP scope.
 
 ### 8.4 Maps & Geolocation
 
@@ -1323,6 +1340,7 @@ On merge to main:   above + manual approval gate + blue-green deploy to producti
 
 - **Error tracking:** Sentry (free tier: 5,000 errors/month)
 - **Metrics & dashboards:** Grafana Cloud free tier (10,000 series)
+- **Metrics/log collection agent:** Grafana Alloy (successor to the deprecated Grafana Agent — use `grafana/alloy`, not the old `grafana/agent` package whose download URL returns 404)
 - **Logs:** Structured JSON to stdout → Grafana Loki (included in Grafana Cloud free tier)
 - **Uptime monitoring:** BetterUptime free tier (HTTP checks every 3 minutes)
 
