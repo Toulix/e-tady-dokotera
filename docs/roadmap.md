@@ -227,7 +227,9 @@ volumes:
 -- Extensions
 CREATE EXTENSION IF NOT EXISTS postgis;
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+-- NOTE (v1.6): uuid-ossp removed. PostgreSQL 13+ includes gen_random_uuid() natively.
+-- uuid-ossp is only needed for uuid_generate_v4() — use gen_random_uuid() everywhere instead.
+-- See Prisma schema: @default(dbgenerated("gen_random_uuid()"))
 
 -- Module schemas
 CREATE SCHEMA IF NOT EXISTS auth;
@@ -756,6 +758,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
 ### ✅ Step 4 — Prisma schema (write this before any application code)
 
+> ⚠️ **v1.6 fixes — three data model corrections:** (1) `"payments"` added to the Prisma datasource `schemas` array — the payments module is Phase 10 but the schema must exist from day 1 to match `init-schemas.sql`. (2) `uuidOssp` removed from datasource `extensions` — `gen_random_uuid()` is native to PostgreSQL 13+ and needs no extension. (3) All model IDs standardized to `@default(dbgenerated("gen_random_uuid()"))` — this generates UUIDs in PostgreSQL (consistent with raw SQL in repositories that also use `gen_random_uuid()`). Using `@default(uuid())` would generate UUIDs in the Prisma client layer instead, creating an inconsistency between ORM-created and `$executeRaw`-created rows.
+
 This is the most important step in Phase 0. The full database schema must be written and migrated before a single business logic file is created. Changing the schema later is expensive.
 
 `apps/api/prisma/schema.prisma` — key patterns to enforce:
@@ -773,13 +777,15 @@ datasource db {
   provider   = "postgresql"
   url        = env("DATABASE_URL")
   schemas    = ["auth", "doctors", "appointments", "scheduling",
-                "notifications", "video", "analytics"]
-  extensions = [postgis, pg_trgm, uuidOssp(map: "uuid-ossp")]
+                "notifications", "video", "analytics", "payments"]
+  extensions = [postgis, pg_trgm]
+  // v1.6: "payments" added (Phase 10 module — Phase 2 scope but schema must exist from day 1)
+  // v1.6: uuidOssp removed — gen_random_uuid() is native to PostgreSQL 13+, no extension needed
 }
 
 // --- auth schema ---
 model User {
-  id                String    @id @default(uuid())
+  id                String    @id @default(dbgenerated("gen_random_uuid()"))
   userType          UserType  @map("user_type")
   phoneNumber       String    @unique @map("phone_number")
   email             String?   @unique
@@ -802,7 +808,11 @@ model User {
 
 // ALL timestamps: @db.Timestamptz (never plain DateTime for this app)
 // ALL money:      Int (Ariary as integer, never Decimal or Float)
-// ALL IDs:        String @id @default(uuid())
+// ALL IDs:        String @id @default(dbgenerated("gen_random_uuid()"))
+// v1.6: @default(uuid()) generates UUIDs in the Prisma client (JS layer); gen_random_uuid()
+// generates them in PostgreSQL natively (no uuid-ossp extension needed, PG 13+ built-in).
+// Raw SQL in repositories uses gen_random_uuid() — standardizing to DB-side generation
+// ensures consistency between Prisma-created rows and $executeRaw-created rows.
 
 // CRITICAL — PostGIS geometry fields MUST use Unsupported():
 // Prisma does not have a native geometry type. Use:
@@ -835,7 +845,7 @@ model Facility {
 
 // SlotLock — used by the two-layer slot locking strategy in Phase 4
 model SlotLock {
-  id         String   @id @default(uuid())
+  id         String   @id @default(dbgenerated("gen_random_uuid()"))
   doctorId   String   @map("doctor_id")
   slotTime   DateTime @map("slot_time") @db.Timestamptz
   userId     String   @map("user_id")

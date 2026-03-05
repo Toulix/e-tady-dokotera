@@ -2,11 +2,14 @@ Healthcare Booking Platform - Technical Specification
 
 ## Madagascar Medical Appointment System
 
-**Version:** 1.3 (Third Architect Review)
+**Version:** 1.4 (Fourth Architect Review — Data Model)
 
 **Date:** March 2026
 
 **Target Market:** Madagascar
+
+> ⚠️ **Review Note (v1.4):** Fourth architect review — data model audit against `domain-data-model/findings.md`. Corrections applied: (1) §5.1 DoctorProfile `average_rating` changed from `NUMERIC(3,2)` to `INTEGER` (0–500 scale); (2) §2.2 cross-module write violation fixed — rating update owned by Doctors module, not Analytics; `ReviewSubmitted` domain event added; (3) §5.1 `auth.sessions` model added (refresh token server-side store); (4) §5.1 `DoctorFacility` join table formally modeled; (5) §5.1 `VisitNote` Phase 2 model documented; (6) §5.1 `NotificationLog` gains `appointment_id` field; (7) §5.1 `ScheduleException` gains `updated_at`; (8) §5.2 `WeeklyScheduleTemplate` uniqueness partial index added; (9) §5.2 schedule_template index made partial on `is_active`; (10) §5.2 five missing indexes added (slot_lock, notification_log, sessions, profile_live_rating); (11) §5.2 GIST index made partial `WHERE geolocation IS NOT NULL`; (12) §5.2 planner behavior comment added to `appt_status_time_idx`.
+>
 
 > ⚠️ **Review Note (v1.3):** Third architect review. Corrections applied: (1) §3.1.3 concurrency section corrected — `SELECT FOR UPDATE` replaced with `INSERT ... ON CONFLICT DO NOTHING` (the roadmap's v1.1 fix was never reflected back in the spec); (2) §5.1 User and Facility entities corrected from `TIMESTAMP` to `TIMESTAMPTZ`; (3) §2.3 `payments` schema added to schema list; (4) §2.3 AWS instance type replaced with DigitalOcean equivalent; (5) §2.6 cost total corrected from ~$210–350 to ~$435–$1,035 (now consistent with §16.2); (6) §2.1 SMS provider "Yas" reverted to "Telma" (unexplained rename); (7) §8.1 Telma/Airtel providers marked as Phase 2 deferral; (8) §8.3 Google Calendar marked as Phase 2; (9) §3.2.4 EHR Lite marked as Phase 2; (10) §10.4 USSD roadmap entry confirmed added; (11) §13.2 Grafana Alloy named as the metrics/log collection agent.
 >
@@ -233,7 +236,10 @@ DoctorVerified         → Doctors (mark profile live)
 VideoSessionStarted    → Analytics (record session start)
 VideoSessionCompleted  → Analytics (record duration) + Notifications (send prescription prompt)
 SlotLockExpired        → Appointments (release unconfirmed booking)
+ReviewSubmitted        → Analytics (record review for aggregate reporting)
 ```
+
+> ⚠️ **v1.4 cross-module write note:** `DoctorProfile.average_rating` was previously described as "updated by analytics module." This violates the "no direct cross-module database write access" rule (§2.2). The correct pattern: `POST /doctors/:id/reviews` is handled entirely by the Doctors module, which updates `average_rating` and `total_reviews` within its own schema, then emits `ReviewSubmitted` for Analytics to record. Analytics never writes to the `doctors` schema.
 
 > 🔧 **Architect note:** Added `SlotLockExpired` event. The 10-minute slot lock on booking must be released via an event, not a polling cron job, to keep latency low for the next patient attempting to book.
 > 
@@ -955,7 +961,7 @@ Ref: [BOOKING_ID]
   video_consultation_enabled: BOOLEAN DEFAULT false
   home_visit_enabled: BOOLEAN DEFAULT false
   is_profile_live: BOOLEAN DEFAULT false  // set true by DoctorVerified event
-  average_rating: NUMERIC(3,2) | NULL  // updated by analytics module, read-only for doctor module
+  average_rating: INTEGER | NULL  // 0–500 (represents 0.00–5.00 × 100); integer avoids Prisma NUMERIC(3,2) precision issues. Owned and updated by Doctors module on review submission — NOT written by Analytics (cross-module write violation). Display as rating/100 in UI.
   total_reviews: INTEGER DEFAULT 0
   total_appointments: INTEGER DEFAULT 0
 }
@@ -1068,6 +1074,7 @@ Ref: [BOOKING_ID]
   custom_end_time: TIME | NULL
   reason: TEXT | NULL  // 'vacation', 'conference', 'public holiday'
   created_at: TIMESTAMPTZ
+  updated_at: TIMESTAMPTZ  // required to track when an exception was last modified
 }
 ```
 
@@ -1077,6 +1084,7 @@ Ref: [BOOKING_ID]
 {
   id: UUID (PK)
   user_id: UUID (FK → auth.users)
+  appointment_id: UUID | NULL  // FK → appointments.appointments.id; NULL for non-appointment notifications
   channel: ENUM('sms', 'email', 'push')
   event_type: STRING  // e.g. 'booking_confirmation', 'reminder_72h', 'reminder_24h', 'reminder_2h'
   recipient: STRING   // phone number (E.164) or email address
@@ -1132,6 +1140,62 @@ Ref: [BOOKING_ID]
 }
 ```
 
+#### Session (auth schema — refresh token server-side store)
+
+> ⚠️ **v1.4 addition (ISSUE-05):** This entity was missing from §5.1 despite being critical — without a server-side sessions table, logout cannot truly invalidate a refresh token. The roadmap Step 8 references Redis for refresh tokens, but a persistent `auth.sessions` table provides auditability and supports "revoke all sessions" (e.g. password change). Store the **hash** of the refresh token, never the raw token value.
+
+```tsx
+{
+  id: UUID (PK)
+  user_id: UUID (FK → auth.users, ON DELETE CASCADE)
+  token_hash: STRING  // bcrypt hash of the refresh token — never store raw JWT
+  expires_at: TIMESTAMPTZ
+  created_at: TIMESTAMPTZ
+  revoked_at: TIMESTAMPTZ | NULL  // set on logout; NULL = active session
+  user_agent: STRING | NULL       // browser/app identifier for session management UI
+  ip_address: STRING | NULL       // stored as text (supports both IPv4 and IPv6)
+}
+```
+
+> 🔧 **Note:** The primary runtime lookup is via Redis (`refresh:{user_id}` key). The `auth.sessions` table provides an audit trail and enables "view active sessions" / "sign out everywhere" features. On login: write to both Redis and `auth.sessions`. On logout: delete from Redis + set `revoked_at` in `auth.sessions`. Add index: `CREATE INDEX sessions_expires_at_idx ON auth.sessions(expires_at) WHERE revoked_at IS NULL;`
+
+#### DoctorFacility (join table — doctors schema)
+
+> ⚠️ **v1.4 addition (ISSUE-08):** This join table is referenced in search SQL (`LEFT JOIN doctors.doctor_facilities df`) and listed in §2.2 module entities but was never formally modeled in §5.1.
+
+```tsx
+{
+  id: UUID (PK)
+  doctor_id: UUID (FK → doctors.profiles.user_id, ON DELETE CASCADE)
+  facility_id: UUID (FK → doctors.facilities.id, ON DELETE CASCADE)
+  is_primary: BOOLEAN DEFAULT false  // doctor's main clinic
+  consultation_fee_override_mga: INTEGER | NULL  // overrides DoctorProfile.consultation_fee_mga for this facility
+  created_at: TIMESTAMPTZ
+
+  UNIQUE(doctor_id, facility_id)
+}
+```
+
+#### VisitNote (appointments schema — Phase 2)
+
+> ⚠️ **v1.4 addition (ISSUE-11, Phase 2 placeholder):** §3.2.4 defers EHR Lite to Phase 2. This model must be designed before EHR Lite implementation begins. `Appointment.notes: TEXT` is a temporary placeholder only.
+
+```tsx
+{
+  id: UUID (PK)
+  appointment_id: UUID (UNIQUE FK → appointments.appointments.id)
+  subjective: TEXT | NULL        // SOAP: patient-reported symptoms
+  objective: TEXT | NULL         // SOAP: examination findings
+  assessment: TEXT | NULL        // SOAP: diagnosis
+  plan: TEXT | NULL              // SOAP: treatment plan
+  icd10_codes: TEXT[] | NULL     // GIN indexed
+  procedure_codes: TEXT[] | NULL
+  is_private: BOOLEAN DEFAULT true  // doctor-only access
+  created_at: TIMESTAMPTZ
+  updated_at: TIMESTAMPTZ
+}
+```
+
 > 🔧 **Architect note — Availability entity redesigned:** The v1.0 `Availability` entity was a significant design problem. It mixed two fundamentally different concepts into one table: (1) the **recurring template** ("I work Mondays 9–12") and (2) **specific exceptions** ("I'm off on March 15"). Mixing these creates complex query logic, update anomalies, and makes it very difficult to generate slot availability for a future date. The correct pattern (used by Calendly, Doctolib, and similar platforms) is two separate tables: `WeeklyScheduleTemplate` (the rule) and `ScheduleException` (the override). The Scheduling module computes available slots on-demand by starting with the template, applying exceptions, then subtracting already-booked appointments. This is clean, efficient, and easy to reason about.
 > 
 
@@ -1144,17 +1208,48 @@ CREATE UNIQUE INDEX users_email_idx ON auth.users(email) WHERE email IS NOT NULL
 
 -- doctors schema
 CREATE INDEX doctors_specialties_gin_idx ON doctors.profiles USING GIN(specialties);
-CREATE INDEX facilities_geolocation_gist_idx ON doctors.facilities USING GIST(geolocation);
+-- Partial GIST index: exclude NULL rows (facilities without a geolocation set yet)
+CREATE INDEX facilities_geolocation_gist_idx ON doctors.facilities USING GIST(geolocation)
+  WHERE geolocation IS NOT NULL;
+-- Covering index for search result ordering (is_profile_live filter + rating sort)
+CREATE INDEX doctors_profile_live_rating_idx
+  ON doctors.profiles(average_rating DESC NULLS LAST)
+  WHERE is_profile_live = true;
 
 -- appointments schema
 CREATE INDEX appt_patient_time_idx ON appointments.appointments(patient_id, start_time DESC);
 CREATE INDEX appt_doctor_time_idx ON appointments.appointments(doctor_id, start_time);
+-- Note: queries filtering on this index MUST use IN() not ANY() — the PostgreSQL planner
+-- may not use a partial index with the ANY() operator. Always write:
+--   WHERE status IN ('pending_confirmation', 'confirmed')
+-- not: WHERE status = ANY(ARRAY['pending_confirmation', 'confirmed'])
 CREATE INDEX appt_status_time_idx ON appointments.appointments(status, start_time)
   WHERE status IN ('pending_confirmation', 'confirmed');  -- partial index, smaller footprint
+-- Slot lock expiry scan — used by the BullMQ cleanup worker for expired locks
+CREATE INDEX slot_lock_expires_at_idx ON appointments.slot_locks(expires_at);
 
 -- scheduling schema
-CREATE INDEX schedule_template_doctor_day_idx ON scheduling.weekly_templates(doctor_id, day_of_week);
+-- Uniqueness: only one active template per (doctor, day, facility, appointment_type) combination.
+-- Prevents duplicate slots and double-booking. Partial unique index must be written as raw
+-- migration SQL — it is not expressible in the Prisma DSL.
+CREATE UNIQUE INDEX weekly_template_active_unique_idx
+  ON scheduling.weekly_templates(doctor_id, day_of_week, facility_id, appointment_type)
+  WHERE is_active = true;
+
+-- Partial index on active templates only — avoids scanning historical (deactivated) rows
+CREATE INDEX schedule_template_doctor_day_active_idx
+  ON scheduling.weekly_templates(doctor_id, day_of_week)
+  WHERE is_active = true;
+
 CREATE INDEX schedule_exception_doctor_date_idx ON scheduling.exceptions(doctor_id, exception_date);
+
+-- notifications schema
+-- Partial index: only rows linked to an appointment (reminder lookups by appointment)
+CREATE INDEX notification_log_appointment_idx
+  ON notifications.notification_log(appointment_id) WHERE appointment_id IS NOT NULL;
+
+-- auth schema — session expiry cleanup
+CREATE INDEX sessions_expires_at_idx ON auth.sessions(expires_at) WHERE revoked_at IS NULL;
 ```
 
 > 🔧 **Architect note:** Removed the Elasticsearch index specification from v1.0 section 5.2. Elasticsearch is not part of the MVP stack (pg_trgm handles text search at MVP scale). Specifying Elasticsearch indexes here created a false impression it was being built immediately, contradicting the stack decision. It will be added to the spec when the migration trigger is hit (>100k doctors or >500ms search latency).
@@ -1674,10 +1769,37 @@ The v1.1 review corrected internal consistency issues (primarily the Kubernetes/
 
 ---
 
-**Document Version:** 1.3 (Third Architect Review)  
+---
 
-**Original Version:** 1.0 (February 17, 2026)  
+---
 
-**Last revised:** February 2026  
+## 23. Architecture Review Summary — v1.4 Changes
+
+> This section documents changes made in the v1.4 data model review. All prior changes remain in Sections 19, 21, and 22.
+>
+
+| # | Area | v1.3 | v1.4 | Reason |
+| --- | --- | --- | --- | --- |
+| ISSUE-02A | `DoctorProfile.average_rating` | `NUMERIC(3,2)` | `INTEGER` (0–500 × 100 scale) | Prisma cannot express column-level NUMERIC precision; requires manual migration override after every `prisma migrate dev`. Integer avoids this. |
+| ISSUE-02B | Rating update ownership | "updated by analytics module" (cross-module write violation) | Owned by Doctors module; `ReviewSubmitted` event added for Analytics to record | `❌ No direct cross-module database write access` rule was being violated. |
+| ISSUE-04 | `WeeklyScheduleTemplate` | No uniqueness constraint; full index | Partial unique index on `(doctor_id, day_of_week, facility_id, appointment_type) WHERE is_active`; index also made partial | Missing uniqueness allowed duplicate active templates → duplicate slots → double-booking risk |
+| ISSUE-05 | `auth.sessions` | Not modeled in §5.1 | Formal model added (token_hash, expires_at, revoked_at) | Without a sessions table, logout cannot audit or mass-revoke tokens |
+| ISSUE-07 | Missing indexes | 5 hot-path indexes absent | `slot_lock_expires_at_idx`, `notification_log_appointment_idx`, `sessions_expires_at_idx`, `doctors_profile_live_rating_idx` added | Performance: full scans on cleanup jobs and search ordering |
+| ISSUE-08 | `DoctorFacility` | Referenced in SQL, not modeled in §5.1 | Formal model added with `UNIQUE(doctor_id, facility_id)` | Would cause confusion between what SQL references and what §5 specifies |
+| ISSUE-11 | `VisitNote` | No model, vague "Phase 2" reference | Phase 2 model formally documented in §5.1 | Developers need the target schema before EHR Lite can be designed |
+| ISSUE-12 | `appt_status_time_idx` | No planner note | Comment added: use `IN()` not `ANY()` for index coverage | PostgreSQL planner may skip partial index with `ANY()` operator |
+| ISSUE-13 | `ScheduleException.updated_at` | Missing | Added | Impossible to track when an exception was last modified without it |
+| ISSUE-14 | `facilities_geolocation_gist_idx` | No `WHERE` clause — indexes NULL rows | `WHERE geolocation IS NOT NULL` added | Minor efficiency: avoids indexing facilities with no geolocation set |
+| ISSUE-09/10 | `@default(uuid())` vs `gen_random_uuid()` | Inconsistency between Prisma DSL and raw SQL | Standardized on `gen_random_uuid()` in Prisma schema; `uuid-ossp` extension removed (see Roadmap §v1.6) | PostgreSQL 13+ includes `gen_random_uuid()` natively; `uuid-ossp` becomes a false dependency |
+
+> Note: ISSUE-01 (TIMESTAMPTZ) and ISSUE-06 (SELECT FOR UPDATE) were already fixed in v1.3. ISSUE-03 (payments schema in `init-schemas.sql`) was already present in the spec SQL; the Prisma datasource fix is in Roadmap v1.6.
+
+---
+
+**Document Version:** 1.4 (Fourth Architect Review — Data Model)
+
+**Original Version:** 1.0 (February 17, 2026)
+
+**Last revised:** March 2026
 
 **Status:** Approved for Implementation
