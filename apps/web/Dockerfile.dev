@@ -1,6 +1,8 @@
 FROM node:20-slim
 
-RUN corepack enable && corepack prepare pnpm@latest --activate
+# Pin an explicit pnpm version — pnpm@latest is non-deterministic across builds.
+# Must match the `engines.pnpm` or `packageManager` field in root package.json.
+RUN corepack enable && corepack prepare pnpm@10.12.1 --activate
 
 WORKDIR /app
 
