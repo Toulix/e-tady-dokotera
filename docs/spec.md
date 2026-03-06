@@ -2,11 +2,14 @@ Healthcare Booking Platform - Technical Specification
 
 ## Madagascar Medical Appointment System
 
-**Version:** 1.5 (Fifth Architect Review — Infrastructure & DevOps)
+**Version:** 1.6 (Sixth Architect Review — Application Security)
 
 **Date:** March 2026
 
 **Target Market:** Madagascar
+
+> ⚠️ **Review Note (v1.6):** Sixth architect review — application security audit against `domain-security/findings.md`. Corrections applied: (1) §6.2 Video Consultation updated — Jitsi JWT changed to 4h, `GET /token-refresh` endpoint added; (2) §6.2 Admin added `POST /admin/users/:id/suspend` with Redis JWT denylist requirement (HIGH-04); (3) §6.2 Appointments — `GET /appointments/:id/prescription-url` added with access control spec (LOW-02); (4) §8.1 SMS opt-out compliance — `sms_opt_outs` table, inbound webhook, and pre-send check documented (MED-04). Findings already implemented in prior reviews: CRIT-01 (RegisterDto `@IsIn(['patient'])`), MED-01 (HIPAA language replaced with Madagascar law reference), MED-05 (WebSocket afterInit CORS via ConfigService).
+>
 
 > ⚠️ **Review Note (v1.5):** Fifth architect review — infrastructure & DevOps audit against `domain-infrastructure/findings.md`. Corrections applied: (1) §4.2 PostgreSQL failover claim corrected — `node_count = 1` provides no automated failover; Phase 2 upgrade path documented; (2) §16.2 PostgreSQL cost corrected from ~$50 to ~$30 (plan `db-s-1vcpu-2gb`, 2 GB RAM); (3) §16.2 total monthly cost updated from ~$435–$1,035 to ~$415–$1,015.
 >
@@ -1331,12 +1334,15 @@ GET /api/v1/doctors/:id/availability?start_date=&end_date=&facility_id=
 #### Appointments
 
 ```
-POST   /api/v1/appointments              Book appointment
-GET    /api/v1/appointments              List (filtered by authenticated user's role)
-GET    /api/v1/appointments/:id          Get details
-PATCH  /api/v1/appointments/:id          Reschedule or cancel
-PATCH  /api/v1/appointments/:id/status   Doctor marks complete / no-show
+POST   /api/v1/appointments                        Book appointment
+GET    /api/v1/appointments                        List (filtered by authenticated user's role)
+GET    /api/v1/appointments/:id                    Get details
+PATCH  /api/v1/appointments/:id                    Reschedule or cancel
+PATCH  /api/v1/appointments/:id/status             Doctor marks complete / no-show
+GET    /api/v1/appointments/:id/prescription-url   Generate pre-signed URL for prescription (patient|doctor only)
 ```
+
+> 🔧 **security-review note (LOW-02):** `GET /appointments/:id/prescription-url` must verify the caller is either the appointment's patient or doctor — not just any authenticated user. The DB stores `prescription_storage_key` (object key); the URL is generated on-demand with a 15-minute expiry. Never return or store the raw pre-signed URL in the DB.
 
 #### Slot Locking
 
@@ -1351,10 +1357,14 @@ DELETE /api/v1/slots/lock/:lock_token   Release lock on booking cancellation or 
 #### Video Consultation
 
 ```
-POST /api/v1/consultations/:appointment_id/start   Doctor starts, room created
-GET  /api/v1/consultations/:appointment_id/join    Patient gets time-limited join token
-POST /api/v1/consultations/:appointment_id/end     End session, save metadata
+POST /api/v1/consultations/:appointment_id/start           Doctor starts, room created
+GET  /api/v1/consultations/:appointment_id/join            Patient gets 4h Jitsi JWT + token_expires_at
+GET  /api/v1/consultations/:appointment_id/token-refresh   Refresh Jitsi JWT mid-consultation (patient|doctor)
+POST /api/v1/consultations/:appointment_id/end             End session, save metadata
 ```
+
+> 🔧 **security-review note (HIGH-02):** The Jitsi JWT is signed with `expiresIn: '4h'` (not 2h). The join endpoint returns `token_expires_at` in the response. The frontend Jitsi IFrame API must call `GET /token-refresh` ~15 minutes before expiry to prevent mid-consultation disconnects.
+>
 
 #### Scheduling (Doctor-facing — Phase 3)
 
@@ -1374,7 +1384,11 @@ DELETE /api/v1/scheduling/exceptions/:id           [auth: doctor]
 GET    /api/v1/admin/doctors/pending               [auth: admin] List unverified doctor profiles
 POST   /api/v1/admin/doctors/:id/verify            [auth: admin] Mark profile live (emits DoctorVerified)
 POST   /api/v1/admin/doctors/:id/reject            [auth: admin] Reject with reason
+POST   /api/v1/admin/users/:id/suspend             [auth: admin] Suspend account immediately
 ```
+
+> 🔧 **security-review note (HIGH-04):** `POST /admin/users/:id/suspend` must write to the Redis JWT denylist (`token_denylist:{userId}`) with TTL = 15 min (the access token lifespan) AND delete `refresh:{userId}` from Redis. `JwtStrategy.validate()` checks the denylist on every request — this ensures suspended accounts are locked out within seconds, not after 15 minutes. See roadmap Step 9 for the full implementation pattern.
+>
 
 #### Notifications — Device Tokens (Phase 9)
 
@@ -1411,6 +1425,12 @@ POST   /api/v1/auth/resend-otp                     Resend OTP (throttled: 3/hour
 4. Africa's Talking (international fallback — preferred for African markets over Twilio) *(Phase 1 MVP)*
 
 **Requirements:** Delivery webhooks, retry up to 3× with exponential backoff, Malagasy Unicode support, message batching for cost optimization.
+
+> 🔧 **security-review note (MED-04) — SMS opt-out compliance:** SMS templates include "Répondre STOP pour se désabonner". This creates a legal obligation — the opt-out must actually work. Three things are required:
+>
+> 1. **`notifications.sms_opt_outs` table** — columns: `phone_number TEXT PRIMARY KEY`, `opted_out_at TIMESTAMPTZ`, `provider TEXT`. Indexed for fast pre-send lookup.
+> 2. **`POST /api/v1/webhooks/sms/inbound/:provider`** — receives inbound SMS from the provider (Orange/Africa's Talking). If body contains "STOP" (case-insensitive), insert into `sms_opt_outs`. Endpoint must be unauthenticated (providers call it) but verified by a provider-specific HMAC signature.
+> 3. **Pre-send check in `NotificationService.send()`** — query `sms_opt_outs` before every outbound SMS and skip send if the phone number is opted out. Log the skip at INFO level.
 
 ### 8.2 Payment Gateway Integration (Phase 2)
 

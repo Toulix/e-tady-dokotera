@@ -1,4 +1,4 @@
-technical-roadmap-v1.6-infra-review
+technical-roadmap-v1.7-security-review
 
 # 🗺️ Technical Roadmap — Step-by-Step Build Guide
 
@@ -267,8 +267,9 @@ PORT=3000
 TZ=Indian/Antananarivo
 FRONTEND_URL=http://localhost:5173
 
-# Bull Board (admin UI password)
+# Bull Board (admin UI password + IP allowlist)
 BULL_BOARD_PASSWORD=change-me
+ADMIN_ALLOWED_IPS=  # comma-separated IPs allowed to reach /admin/queues in production
 
 # SMS (mock in development)
 SMS_PROVIDER=mock
@@ -694,6 +695,22 @@ async function bootstrap() {
   const serverAdapter = new ExpressAdapter();
   serverAdapter.setBasePath('/admin/queues');
   createBullBoard({ queues: [], serverAdapter });
+
+  // CRIT-03 fix: IP allowlist before basicAuth. HTTP Basic Auth is base64-encoded
+  // (not encrypted) — credentials are plaintext if traffic reaches port 3000 directly
+  // (e.g. if Nginx is bypassed). Defense-in-depth: restrict to known IPs first.
+  // Set ADMIN_ALLOWED_IPS=1.2.3.4,5.6.7.8 in .env.production. In development the
+  // check is skipped so the board is accessible locally without configuration.
+  app.use('/admin/queues', (req: any, res: any, next: any) => {
+    const allowedIps = (config.get<string>('ADMIN_ALLOWED_IPS', '') ?? '').split(',').filter(Boolean);
+    if (config.get('NODE_ENV') === 'production' && allowedIps.length > 0) {
+      const clientIp = req.ip ?? req.socket?.remoteAddress;
+      if (!allowedIps.includes(clientIp)) {
+        return res.status(403).json({ message: 'Forbidden' });
+      }
+    }
+    next();
+  });
   app.use(
     '/admin/queues',
     basicAuth({
@@ -1074,10 +1091,28 @@ class OtpService {
   }
 
   async verify(phone: string, code: string): Promise<boolean> {
+    // CRIT-02 fix: per-phone attempt counter prevents distributed brute force.
+    // A 6-digit OTP (1,000,000 values) can be exhausted quickly if rate limiting
+    // is IP-only — Madagascar carriers use CGN so thousands of users share one IP.
+    // This Redis counter is keyed on phone number, not IP, and is atomic.
+    const attemptsKey = `otp_attempts:${phone}`;
+    const attempts = await this.redis.incr(attemptsKey);
+    if (attempts === 1) await this.redis.expire(attemptsKey, 600); // TTL matches OTP TTL
+
+    if (attempts > 5) {
+      throw new HttpException(
+        { code: 'OTP_MAX_ATTEMPTS', message: 'Too many attempts. Request a new code.' },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
     const hash = await this.redis.get(`otp:${phone}`);
     if (!hash) return false;
     const valid = await bcrypt.compare(code, hash);
-    if (valid) await this.redis.del(`otp:${phone}`);
+    if (valid) {
+      await this.redis.del(`otp:${phone}`);
+      await this.redis.del(attemptsKey); // clean up on success
+    }
     return valid;
   }
 }
@@ -1088,6 +1123,9 @@ class OtpService {
 ### ✅ Step 8 — Auth endpoints
 
 Implement in `modules/auth/api/auth.controller.ts`:
+
+> ⚠️ **security-review fix — per-phone OTP rate limiting must be applied HERE, not deferred to Phase 8:** The `OtpService.verify()` implementation above includes a Redis-backed per-phone attempt counter (max 5 per 10 minutes). This is non-negotiable at this step — auth endpoints are live as soon as Step 8 ships, and OTP brute force is a critical vulnerability. Do NOT leave this for Step 33. The `PhoneThrottlerGuard` in Step 33 adds IP-layer throttling on top of this; they are complementary, not alternatives.
+>
 
 > ⚠️ **v1.1 correction — refresh token delivery:** The refresh token is delivered and consumed via an `HttpOnly` cookie, never via the JSON response body. JavaScript cannot read or write `HttpOnly` cookies — that is the security property being used. The NestJS controller must explicitly call `response.cookie()` with the correct flags. The JSON body only ever returns `access_token`.
 > 
@@ -1153,19 +1191,28 @@ export class AuthController {
   // A hardcoded '/api/v1/auth/refresh' would break if app.setGlobalPrefix() changes.
   private setRefreshCookie(response: Response, token: string): void {
     const prefix = this.config.get<string>('API_PREFIX', 'api/v1');
-    response.cookie('refresh_token', token, {
+    // LOW-03 note: the cookie name uses the __Host- prefix in production.
+    // __Host- requires: Secure=true, no Domain attribute, Path=/.
+    // We use Path=/ (not /api/v1/auth/refresh) to satisfy the prefix requirement —
+    // SameSite=Strict already prevents cross-site leakage. The browser will still
+    // only send this cookie over HTTPS. In development (Secure=false) the prefix
+    // is omitted because browsers ignore __Host- on non-HTTPS origins.
+    const isProd = this.config.get('NODE_ENV') === 'production';
+    const cookieName = isProd ? '__Host-refresh_token' : 'refresh_token';
+    response.cookie(cookieName, token, {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: isProd,
       sameSite: 'strict',
-      path: `/${prefix}/auth/refresh`,  // cookie only sent to the refresh endpoint
+      path: '/',  // required by __Host- prefix; SameSite=Strict prevents misuse
       maxAge: 7 * 24 * 60 * 60 * 1000,  // 7 days in ms
     });
   }
 
   // Helper to clear the refresh token cookie on logout
   private clearRefreshCookie(response: Response): void {
-    const prefix = this.config.get<string>('API_PREFIX', 'api/v1');
-    response.clearCookie('refresh_token', { path: `/${prefix}/auth/refresh` });
+    const isProd = this.config.get('NODE_ENV') === 'production';
+    const cookieName = isProd ? '__Host-refresh_token' : 'refresh_token';
+    response.clearCookie(cookieName, { path: '/' });
   }
 
   @Post('login')
@@ -1180,7 +1227,10 @@ export class AuthController {
   @HttpCode(200)
   async refresh(@Req() req: Request, @Res({ passthrough: true }) res: Response) {
     // cookie-parser middleware (wired in main.ts) populates req.cookies
-    const oldToken = req.cookies['refresh_token'];
+    // LOW-03: cookie name varies by environment (__Host- prefix in production)
+    const isProd = this.config.get('NODE_ENV') === 'production';
+    const cookieName = isProd ? '__Host-refresh_token' : 'refresh_token';
+    const oldToken = req.cookies[cookieName];
     if (!oldToken) throw new UnauthorizedException('No refresh token');
     const { accessToken, refreshToken } = await this.authService.rotateRefreshToken(oldToken);
     this.setRefreshCookie(res, refreshToken);
@@ -1228,6 +1278,44 @@ export class RolesGuard implements CanActivate {
 @Get('doctor-only-endpoint')
 ```
 
+> ⚠️ **HIGH-04 fix — JWT denylist for immediate access token revocation:** `RolesGuard` reads `user.userType` from the decoded JWT payload. During the 15-minute access token window, a suspended doctor's JWT is still valid — logout only invalidates the refresh token. Add a Redis-backed denylist check in `JwtStrategy.validate()`:
+>
+> ```typescript
+> // modules/auth/infrastructure/jwt.strategy.ts
+> @Injectable()
+> export class JwtStrategy extends PassportStrategy(Strategy) {
+>   constructor(
+>     config: ConfigService,
+>     @Inject(REDIS_CLIENT) private readonly redis: Redis,
+>   ) {
+>     super({
+>       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
+>       secretOrKey: config.get('JWT_SECRET'),
+>     });
+>   }
+>
+>   async validate(payload: JwtPayload): Promise<JwtPayload> {
+>     // HIGH-04 fix: check Redis denylist before trusting the JWT.
+>     // On account suspension: await redis.set(`token_denylist:${userId}`, Date.now(), 'EX', 15 * 60)
+>     // The TTL matches the access token lifespan — the entry self-cleans once all tokens expire.
+>     const revokedAt = await this.redis.get(`token_denylist:${payload.sub}`);
+>     if (revokedAt && Number(revokedAt) > payload.iat * 1000) {
+>       throw new UnauthorizedException('Token has been revoked');
+>     }
+>     return payload;
+>   }
+> }
+> ```
+>
+> To suspend a user (in `AuthService` or an `AdminService`):
+> ```typescript
+> // Invalidate all currently-live access tokens for this user.
+> // The 15-min TTL mirrors the access token lifespan — no manual cleanup needed.
+> await this.redis.set(`token_denylist:${userId}`, Date.now(), 'EX', 15 * 60);
+> // Also delete the refresh token so no new access tokens can be issued.
+> await this.redis.del(`refresh:${userId}`);
+> ```
+
 ---
 
 ### ✅ Step 10 — Auth frontend
@@ -1239,6 +1327,49 @@ Build three real pages (not placeholders):
 **VerifyOtpPage:** Six individual digit inputs. Auto-advance to next box on keystroke. On complete → `POST /auth/verify-otp` → store `access_token` in Zustand via `useAuthStore.getState().setAuth(user, accessToken)` → redirect to dashboard.
 
 **LoginPage:** Phone + password. On success → store the `access_token` from the response body in Zustand memory only (never `localStorage`, never `sessionStorage`). The `refresh_token` is automatically stored in the browser’s cookie jar via the `Set-Cookie` header — the frontend code does nothing to persist it. On subsequent page loads, the Axios interceptor calls `POST /auth/refresh` (the browser automatically sends the httpOnly cookie with `withCredentials: true`) to silently restore the session.
+
+> ⚠️ **LOW-04 fix — auto-logout must call `POST /auth/logout`, not just clear Zustand state:** Simply clearing the Zustand store leaves the refresh token cookie and the Redis session entry alive. An attacker with access to the cookie can continue refreshing forever. The 30-minute inactivity timer must:
+>
+> 1. Call `POST /api/v1/auth/logout` (which deletes Redis key and clears the cookie server-side).
+> 2. Then clear the Zustand access token.
+>
+> ```typescript
+> // apps/web/src/hooks/useIdleLogout.ts
+> import { useEffect, useRef } from ‘react’;
+> import { useAuthStore } from ‘../stores/auth.store’;
+> import { apiClient } from ‘../lib/api’;
+>
+> const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+>
+> export function useIdleLogout() {
+>   const clearAuth = useAuthStore(s => s.clearAuth);
+>   const timer = useRef<ReturnType<typeof setTimeout>>();
+>
+>   const resetTimer = () => {
+>     clearTimeout(timer.current);
+>     timer.current = setTimeout(async () => {
+>       try {
+>         await apiClient.post(‘/auth/logout’);
+>       } finally {
+>         // LOW-04: clear local state regardless of network result
+>         clearAuth();
+>       }
+>     }, IDLE_TIMEOUT_MS);
+>   };
+>
+>   useEffect(() => {
+>     const events = [‘mousemove’, ‘keydown’, ‘click’, ‘touchstart’];
+>     events.forEach(e => window.addEventListener(e, resetTimer));
+>     resetTimer();
+>     return () => {
+>       clearTimeout(timer.current);
+>       events.forEach(e => window.removeEventListener(e, resetTimer));
+>     };
+>   }, []);
+> }
+> ```
+>
+> Mount `useIdleLogout()` in the root authenticated layout component.
 
 **✔ Acceptance:** Register a new account. OTP appears in API console log. Enter it. See `"Welcome, [Name]"` on the dashboard route. Refresh the page — user stays logged in (refresh token restores session).
 
@@ -1389,7 +1520,33 @@ LEFT JOIN doctors.facilities f ON f.id = df.facility_id
 **Layer 4** — add next-available-slot subquery (write this as a separate raw SQL function called via JOIN LATERAL, not inline).
 
 > ⚠️ Write all four layers as raw SQL in a `DoctorSearchRepository` method, not Prisma ORM. Prisma cannot handle these query patterns efficiently.
-> 
+>
+
+> ⚠️ **MED-03 fix — use `Prisma.sql` tagged template for safe dynamic query composition:** Do NOT build the combined multi-layer query with string concatenation or template literals. Use `Prisma.sql` (from `@prisma/client/runtime/library`) which automatically parameterizes all interpolated values, preventing SQL injection through search inputs. Example of safe layer composition:
+>
+> ```typescript
+> import { Prisma } from '@prisma/client';
+>
+> // Each layer produces a Prisma.Sql fragment; they are joined safely
+> const specialtyClause = Prisma.sql`AND ($1 = '' OR p.specialties @> ARRAY[${specialty}]::text[])`;
+> const nameClause = name
+>   ? Prisma.sql`AND similarity(u.first_name || ' ' || u.last_name, ${name}) > 0.3`
+>   : Prisma.empty;
+>
+> const result = await this.prisma.$queryRaw(Prisma.sql`
+>   SELECT p.*, u.first_name, u.last_name
+>   FROM doctors.profiles p
+>   INNER JOIN auth.users u ON u.id = p.user_id
+>   WHERE p.is_profile_live = true
+>     ${specialtyClause}
+>     ${nameClause}
+>   ORDER BY p.average_rating DESC NULLS LAST
+>   LIMIT ${limit} OFFSET ${offset}
+> `);
+> ```
+>
+> The `$N` positional parameter examples above are illustrative. Always use the tagged template approach in implementation — do not manually number `$1`, `$2` parameters when composing multi-layer queries.
+>
 
 ---
 
@@ -1880,6 +2037,18 @@ POST /api/v1/doctors/:id/reviews
 GET /api/v1/doctors/:id/reviews
   Query: page, limit (default 20)
   → 200 { data: { items: Review[], meta: { page, total } } }
+
+// LOW-02 fix: prescription pre-signed URL endpoint.
+// The DB stores prescription_storage_key (object key), not the full URL.
+// This endpoint generates a time-limited pre-signed URL on demand.
+// Access control: only the patient of this appointment or the appointment's doctor.
+GET /api/v1/appointments/:id/prescription-url
+  Guard: JwtAuthGuard + (req.user.sub === appointment.patientId || req.user.sub === appointment.doctorId)
+  → Fetch appointment.prescription_storage_key
+  → If null: 404 { code: 'NO_PRESCRIPTION' }
+  → Generate pre-signed URL (15-minute expiry) via StorageService
+  → 200 { data: { url: string, expires_at: string } }
+  // Never expose the raw storage key in the response
 ```
 
 ---
@@ -1961,7 +2130,13 @@ Implement these providers in order:
 
 ```tsx
 // infrastructure/providers/mock-sms.provider.ts
-//   → console.log the SMS. Used in development + tests.
+//   → console.log the SMS. Used in development + tests ONLY.
+//   LOW-01 fix: throw at startup if loaded in production or staging — a misconfigured
+//   SMS_PROVIDER env var in production would silently drop all SMS instead of sending.
+//   Fail loudly at boot rather than at the first attempted SMS send.
+//   if (process.env.NODE_ENV !== 'development' && process.env.NODE_ENV !== 'test') {
+//     throw new Error('MockSmsProvider must not be used outside development/test environments. Set SMS_PROVIDER=orange or SMS_PROVIDER=africas_talking.');
+//   }
 
 // infrastructure/providers/orange-madagascar.provider.ts
 //   → Real Orange Madagascar API client
@@ -2154,6 +2329,42 @@ SMS templates loaded from i18n files (never hardcoded in service logic):
 ```
 
 In `NotificationService`, select the template file based on the patient’s `preferred_language` field. Fall back to French if a Malagasy template key is missing.
+
+> ⚠️ **MED-04 fix — SMS STOP opt-out must be implemented alongside SMS sending:** Every SMS template includes "Répondre STOP pour se désabonner" — this creates a legal opt-out obligation. Three pieces are required:
+>
+> **1. Prisma schema addition** (in notifications schema):
+> ```prisma
+> model SmsOptOut {
+>   phone_number String   @id
+>   opted_out_at DateTime @db.Timestamptz
+>   provider     String
+>
+>   @@map("sms_opt_outs")
+>   @@schema("notifications")
+> }
+> ```
+>
+> **2. Inbound webhook** — providers POST inbound SMS here when a user replies:
+> ```typescript
+> // POST /api/v1/webhooks/sms/inbound/:provider  — unauthenticated, HMAC-verified
+> // Body format varies by provider; normalize to { from: string, body: string }
+> // If body.trim().toUpperCase() === ‘STOP’: insert into sms_opt_outs
+> // Verify HMAC signature using provider-specific header (e.g. X-Orange-Signature)
+> // before processing — reject with 401 if signature fails
+> ```
+>
+> **3. Pre-send opt-out check in `NotificationService.send()`:**
+> ```typescript
+> async send(to: string, templateKey: string, vars: Record<string, string>): Promise<void> {
+>   // MED-04: skip send for opted-out numbers; do not throw — just log and return.
+>   const optedOut = await this.notificationRepo.isOptedOut(to);
+>   if (optedOut) {
+>     this.logger.log(`SMS skipped — phone ${to} opted out`);
+>     return;
+>   }
+>   // ... proceed with send
+> }
+> ```
 
 ---
 
@@ -2499,6 +2710,42 @@ resource "digitalocean_container_registry" "registry" {
   name                   = "madagascar-health"
   subscription_tier_slug = "starter"
 }
+
+# HIGH-01 fix: Terraform firewall — only ports 22 (SSH), 80 (HTTP redirect), and 443 (HTTPS)
+# are open inbound. Port 3000 is intentionally absent — Nginx proxies to 127.0.0.1:3000
+# and is the only entry point. Without this, port 3000 is reachable directly from the
+# internet, bypassing Nginx, Cloudflare WAF, and HTTPS termination.
+resource "digitalocean_firewall" "app" {
+  name        = "madagascar-health-fw"
+  droplet_ids = [digitalocean_droplet.app.id]
+
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "22"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "80"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "443"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+
+  outbound_rule {
+    protocol              = "tcp"
+    port_range            = "1-65535"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+  outbound_rule {
+    protocol              = "udp"
+    port_range            = "1-65535"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+}
 ```
 
 Store `do_token` and `ssh_fingerprint` in `terraform.tfvars` — **git-ignored**. Never hardcode credentials.
@@ -2520,6 +2767,15 @@ chmod 600 /home/deploy/.ssh/authorized_keys
 # Install Docker
 curl -fsSL https://get.docker.com | sh
 usermod -aG docker deploy   # allow deploy to run docker without sudo
+
+# HIGH-01 fix: ufw host-level firewall (defense-in-depth alongside Terraform firewall).
+# Port 3000 is deliberately absent — only Nginx (80/443) is public.
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow 22/tcp comment 'SSH'
+ufw allow 80/tcp comment 'HTTP (Nginx → HTTPS redirect)'
+ufw allow 443/tcp comment 'HTTPS (Nginx)'
+ufw --force enable
 
 # Install Nginx + certbot
 apt install -y nginx certbot python3-certbot-nginx
@@ -2562,6 +2818,26 @@ server {
     proxy_send_timeout 86400s;
   }
 
+  # HIGH-03 fix: admin routes restricted by IP before reaching NestJS.
+  # Replace YOUR_OFFICE_IP and YOUR_VPN_CIDR with real values; add as many
+  # allow directives as needed. The application-level @Roles('admin') guard
+  # is still required — Nginx IP filtering alone is not sufficient defense-in-depth
+  # (see Step 34 checklist). These two controls are complementary.
+  location /api/v1/admin/ {
+    allow YOUR_OFFICE_IP;
+    allow YOUR_VPN_CIDR;
+    deny all;
+    proxy_pass         http://127.0.0.1:3000;
+    proxy_http_version 1.1;
+    proxy_set_header   Host $host;
+    proxy_set_header   X-Real-IP $remote_addr;
+    proxy_set_header   X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header   X-Forwarded-Proto $scheme;
+    proxy_connect_timeout 5s;
+    proxy_read_timeout    30s;
+    proxy_send_timeout    30s;
+  }
+
   # HTTP API — short timeout; a hung handler should not hold a worker for 24 hours
   location / {
     proxy_pass         http://127.0.0.1:3000;
@@ -2588,7 +2864,10 @@ services:
   api:
     image: registry.digitalocean.com/madagascar-health/api:latest
     restart: unless-stopped
-    ports: ["3000:3000"]
+    # HIGH-01 fix: bind to loopback only — prevents direct public access bypassing Nginx/Cloudflare WAF.
+    # "3000:3000" would expose the raw HTTP server on 0.0.0.0 (all interfaces), including the public IP.
+    # Nginx on the same host connects to 127.0.0.1:3000 via proxy_pass and is the only entry point.
+    ports: ["127.0.0.1:3000:3000"]
     env_file: .env.production
     environment:
       NODE_ENV: production
@@ -2732,7 +3011,10 @@ function signJitsiToken(roomName: string, role: 'moderator' | 'participant', con
       moderator: role === 'moderator',
     },
     config.get('JITSI_APP_SECRET'),
-    { expiresIn: '2h' },
+    // HIGH-02 fix: 2h caused mid-consultation disconnects for long appointments.
+    // 4h covers any realistic consultation duration; the token is scoped to a single
+    // room so a longer expiry does not expand the blast radius if compromised.
+    { expiresIn: '4h' },
   );
 }
 
@@ -2740,7 +3022,16 @@ function signJitsiToken(roomName: string, role: 'moderator' | 'participant', con
 //   → Validates patient is participant of this appointment
 //   → Validates session exists (doctor has started)
 //   → Signs JWT for patient (role: participant)
-//   → Returns { room_url, token }
+//   → Returns { room_url, token, token_expires_at }
+
+// GET /api/v1/consultations/:appointmentId/token-refresh  [auth: patient | doctor]
+//   HIGH-02 fix: endpoint for refreshing a Jitsi token mid-consultation.
+//   → Validates caller is a participant of this appointment
+//   → Validates the session is still active (ended_at IS NULL)
+//   → Signs a new 4h Jitsi JWT for the same room
+//   → Returns { token, token_expires_at }
+//   Frontend Jitsi IFrame API should call this ~15 min before expiry using
+//   the `token_expires_at` value received from /join.
 
 // POST /api/v1/consultations/:appointmentId/end  [auth: doctor]
 //   → Records ended_at, computes duration_minutes
@@ -3325,7 +3616,30 @@ Critical bugs fixed: (1) `SELECT FOR UPDATE` on wrong table — replaced with `I
 
 ---
 
-*Roadmap version 1.5 · March 2026 · Derived from Technical Specification v1.3 (see infra-review summary for v1.6 changes)*
+*Roadmap version 1.7 · March 2026 · Derived from Technical Specification v1.6 (security-review changes below)*
+
+---
+
+### v1.7 Changes — Security Review (domain-security/findings.md)
+
+| # | ID | Location | Change | Reason |
+|---|---|---|---|---|
+| 1 | CRIT-02 | Step 7 — `OtpService.verify()` | Added Redis per-phone attempt counter (`otp_attempts:{phone}`, max 5 per 600s) inside `verify()` | IP-only throttling is defeated by distributed attacks; CGN means thousands of users share one IP in Madagascar |
+| 2 | MED-02 | Step 8 — auth endpoints | Added warning note: per-phone rate limiting must be applied at Step 8, not deferred to Step 33 | OTP brute force is possible from first deployment — not after Phase 8 |
+| 3 | CRIT-03 | Step 3 — `main.ts` | Added IP allowlist middleware before `basicAuth` for `/admin/queues`; added `ADMIN_ALLOWED_IPS` env var | HTTP Basic Auth is base64 (not encrypted) — if port 3000 is reachable directly, credentials leak in plaintext |
+| 4 | CRIT-03 | `.env.example` | Added `ADMIN_ALLOWED_IPS` variable | Supports CRIT-03 fix above |
+| 5 | HIGH-01 | Step 28 — `docker-compose.prod.yml` | `ports: ["3000:3000"]` → `ports: ["127.0.0.1:3000:3000"]` | 0.0.0.0 binding exposes NestJS directly on public IP, bypassing Nginx and Cloudflare WAF |
+| 6 | HIGH-01 | Step 28 — Terraform | Added `digitalocean_firewall` resource (ports 22/80/443 only) | No firewall resource existed — port 3000 and others were publicly reachable |
+| 7 | HIGH-01 | Step 28 — Droplet bootstrap | Added `ufw` setup (allow 22/80/443, deny all others) | Host-level defense-in-depth alongside cloud firewall |
+| 8 | HIGH-02 | Step 31 — `signJitsiToken()` | `expiresIn: '2h'` → `'4h'`; added `GET /consultations/:id/token-refresh` endpoint | 2h JWT disconnects participants mid-consultation; 4h covers any realistic session |
+| 9 | HIGH-03 | Step 28 — Nginx config | Added `location /api/v1/admin/` block with `allow`/`deny` directives | IP allowlist was a checklist item with no implementation; added actual Nginx config |
+| 10 | HIGH-04 | Step 9 — `JwtStrategy.validate()` | Added Redis denylist check (`token_denylist:{userId}`) on every request | JWT role claims not re-validated — suspended accounts remain valid for up to 15 minutes |
+| 11 | MED-03 | Step 13 — `DoctorSearchRepository` | Added `Prisma.sql` tagged template composition pattern | Dynamic multi-layer query composition with string interpolation risks SQL injection |
+| 12 | MED-04 | Step 25 — SMS templates | Added `sms_opt_outs` Prisma model, `POST /webhooks/sms/inbound/:provider` webhook, pre-send opt-out check in `NotificationService.send()` | "Répondre STOP" in every template creates a legal opt-out obligation with no backend implementation |
+| 13 | LOW-01 | Step 23 — `MockSmsProvider` | Added environment guard: throw at startup if `NODE_ENV` is not `development` or `test` | Misconfigured `SMS_PROVIDER` in production would silently drop all SMS without the guard |
+| 14 | LOW-02 | Step 20 — booking endpoints | Added `GET /appointments/:id/prescription-url` with IDOR access control | Prescription endpoint was undocumented; pre-signed URL generation needs explicit ownership check |
+| 15 | LOW-03 | Step 8 — `setRefreshCookie()` | Cookie name → `__Host-refresh_token` in production; `Path=/`; `Secure=true` | `__Host-` prefix prevents subdomain cookie hijacking; browser enforces HTTPS-only |
+| 16 | LOW-04 | Step 10 — auth frontend | Added `useIdleLogout()` hook calling `POST /auth/logout` before clearing Zustand | Clearing Zustand only leaves refresh token cookie and Redis session alive |
 
 ---
 
