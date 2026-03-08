@@ -22,11 +22,12 @@ COPY package.json tsconfig.json tsconfig.build.json ./
 # compile the native bindings they need.
 RUN pnpm install
 
-# Step 4: Copy Prisma schema + config and generate the client.
-# prisma.config.ts lives at the api root; prisma/ contains schema.prisma.
-# COPY prisma.config.ts ./
-# COPY prisma ./prisma
-# RUN pnpm exec prisma generate
+# Prisma schema + config: prisma.config.ts lives at the api root;
+# prisma/ contains schema.prisma. Generate the client at build time
+# so the app can import @prisma/client at startup.
+COPY prisma.config.ts ./
+COPY prisma ./prisma
+RUN pnpm exec prisma generate
 
 EXPOSE 3000
 

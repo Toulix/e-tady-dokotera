@@ -1,0 +1,482 @@
+generator client {
+  provider        = "prisma-client"
+  // Prisma 7: multiSchema is GA and no longer needs a preview flag.
+  previewFeatures = ["postgresqlExtensions"]
+  output          = "../src/generated/prisma"
+  moduleFormat    = "cjs"
+}
+
+// Prisma 7: url is configured in prisma.config.ts, not here.
+datasource db {
+  provider   = "postgresql"
+  schemas    = ["auth", "doctors", "appointments", "scheduling", "notifications", "video", "analytics", "payments"]
+  // v1.6: uuidOssp removed — gen_random_uuid() is native to PostgreSQL 13+, no extension needed.
+  // v1.6: "payments" added — Phase 10 module but the schema must exist from day 1
+  // to match init-schemas.sql.
+  // Only postgis is needed for geometry(Point, 4326) columns.
+  // fuzzystrmatch, postgis_tiger_geocoder, postgis_topology are US-address-geocoding
+  // utilities — not used in this project.
+  // The postgis/postgis Docker image always auto-creates all 4 extensions regardless
+  // of env vars. infra/docker/drop-unused-extensions.sql (mounted as initdb script 20-)
+  // drops all 4 after image init so Prisma can own postgis via migration history.
+  extensions = [postgis]
+}
+
+// ─── Enums ──────────────────────────────────────────────────────────
+
+enum UserType {
+  patient
+  doctor
+  admin
+  support
+
+  @@schema("auth")
+}
+
+enum Gender {
+  male
+  female
+  other
+  prefer_not_to_say
+
+  @@schema("auth")
+}
+
+enum Language {
+  malagasy
+  french
+  english
+
+  @@schema("auth")
+}
+
+enum AppointmentType {
+  in_person
+  video
+  home_visit
+
+  @@schema("appointments")
+}
+
+enum AppointmentStatus {
+  pending_confirmation
+  confirmed
+  completed
+  cancelled
+  no_show
+
+  @@schema("appointments")
+}
+
+enum CancelledBy {
+  patient
+  doctor
+  system
+
+  @@schema("appointments")
+}
+
+enum PaymentStatus {
+  not_applicable
+  pending
+  paid
+  refunded
+
+  @@schema("appointments")
+}
+
+enum PaymentMethod {
+  cash
+  mobile_money
+  card
+  insurance
+
+  @@schema("appointments")
+}
+
+enum FacilityType {
+  hospital
+  clinic
+  diagnostic_center
+  pharmacy
+
+  @@schema("doctors")
+}
+
+enum ScheduleAppointmentType {
+  in_person
+  video
+  both
+
+  @@schema("scheduling")
+}
+
+enum ExceptionType {
+  day_off
+  custom_hours
+  emergency_only
+
+  @@schema("scheduling")
+}
+
+enum NotificationChannel {
+  sms
+  email
+  push
+
+  @@schema("notifications")
+}
+
+enum NotificationStatus {
+  pending
+  sent
+  delivered
+  failed
+
+  @@schema("notifications")
+}
+
+// ─── auth schema ────────────────────────────────────────────────────
+
+model User {
+  id                String    @id @default(dbgenerated("gen_random_uuid()"))
+  userType          UserType  @map("user_type")
+  phoneNumber       String    @unique @map("phone_number")
+  email             String?   @unique
+  passwordHash      String    @map("password_hash")
+  firstName         String    @map("first_name")
+  lastName          String    @map("last_name")
+  dateOfBirth       DateTime? @map("date_of_birth") @db.Date
+  gender            Gender?
+  profilePhotoUrl   String?   @map("profile_photo_url")
+  preferredLanguage Language  @default(malagasy) @map("preferred_language")
+  isActive          Boolean   @default(true) @map("is_active")
+  isVerified        Boolean   @default(false) @map("is_verified")
+  lastLoginAt       DateTime? @map("last_login_at") @db.Timestamptz
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  doctorProfile         DoctorProfile?
+  doctorFacilities      DoctorFacility[]
+  patientAppointments   Appointment[]      @relation("PatientAppointments")
+  doctorAppointments    Appointment[]      @relation("DoctorAppointments")
+  weeklyTemplates       WeeklyScheduleTemplate[]
+  scheduleExceptions    ScheduleException[]
+  sessions              Session[]
+
+  @@map("users")
+  @@schema("auth")
+}
+
+model OtpCode {
+  id        String   @id @default(dbgenerated("gen_random_uuid()"))
+  phone     String
+  code      String
+  expiresAt DateTime @map("expires_at") @db.Timestamptz
+  verified  Boolean  @default(false)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([phone, code])
+  @@map("otp_codes")
+  @@schema("auth")
+}
+
+// Persistent sessions for refresh token tracking and forced logout
+model Session {
+  id           String   @id @default(dbgenerated("gen_random_uuid()"))
+  userId       String   @map("user_id")
+  // bcrypt hash of the refresh token — never store the raw token
+  tokenHash    String   @map("token_hash")
+  userAgent    String?  @map("user_agent")
+  ipAddress    String?  @map("ip_address")
+  expiresAt    DateTime @map("expires_at") @db.Timestamptz
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+  @@schema("auth")
+}
+
+// ─── doctors schema ─────────────────────────────────────────────────
+
+model DoctorProfile {
+  userId                     String   @id @map("user_id")
+  registrationNumber         String   @unique @map("registration_number")
+  specialties                String[]
+  subSpecialties             String[] @map("sub_specialties")
+  yearsOfExperience          Int      @map("years_of_experience")
+  about                      String?
+  languagesSpoken            String[] @map("languages_spoken")
+  consultationFeeMga         Int      @map("consultation_fee_mga")
+  consultationDurationMinutes Int     @default(30) @map("consultation_duration_minutes")
+  acceptsNewPatients         Boolean  @default(true) @map("accepts_new_patients")
+  education                  Json?
+  certifications             Json?
+  insuranceAccepted          String[] @map("insurance_accepted")
+  videoConsultationEnabled   Boolean  @default(false) @map("video_consultation_enabled")
+  homeVisitEnabled           Boolean  @default(false) @map("home_visit_enabled")
+  isProfileLive              Boolean  @default(false) @map("is_profile_live")
+  // v1.4 fix: INTEGER (0–500) representing 0.00–5.00 stars scaled by ×100.
+  // Using Int avoids Decimal/Float precision issues for ratings.
+  averageRating              Int      @default(0) @map("average_rating")
+  totalReviews               Int      @default(0) @map("total_reviews")
+  totalAppointments          Int      @default(0) @map("total_appointments")
+
+  user       User             @relation(fields: [userId], references: [id])
+  facilities DoctorFacility[]
+
+  // Composite index for filtering live profiles by rating (search page)
+  @@index([isProfileLive, averageRating(sort: Desc)])
+  @@map("profiles")
+  @@schema("doctors")
+}
+
+model Facility {
+  id           String       @id @default(dbgenerated("gen_random_uuid()"))
+  name         String
+  type         FacilityType
+  address      String
+  city         String
+  region       String
+  // PostGIS geometry — Prisma can't generate typed accessors for this.
+  // All geo queries (ST_DWithin, ST_MakePoint, ST_Distance) must use
+  // prisma.$queryRaw, encapsulated in FacilityRepository.
+  geolocation  Unsupported("geometry(Point, 4326)")?
+  phoneNumber  String?      @map("phone_number")
+  email        String?
+  website      String?
+  openingHours Json?        @map("opening_hours")
+  photos       String[]
+  isVerified   Boolean      @default(false) @map("is_verified")
+  createdAt    DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  doctorFacilities DoctorFacility[]
+  appointments     Appointment[]
+
+  @@map("facilities")
+  @@schema("doctors")
+}
+
+model DoctorFacility {
+  id         String @id @default(dbgenerated("gen_random_uuid()"))
+  doctorId   String @map("doctor_id")
+  facilityId String @map("facility_id")
+
+  doctor   User          @relation(fields: [doctorId], references: [id], map: "doctor_facilities_user_fkey")
+  facility Facility      @relation(fields: [facilityId], references: [id])
+  profile  DoctorProfile @relation(fields: [doctorId], references: [userId], map: "doctor_facilities_profile_fkey")
+
+  @@unique([doctorId, facilityId])
+  @@map("doctor_facilities")
+  @@schema("doctors")
+}
+
+// ─── appointments schema ────────────────────────────────────────────
+
+model Appointment {
+  id                  String            @id @default(dbgenerated("gen_random_uuid()"))
+  bookingReference    String            @unique @map("booking_reference")
+  patientId           String            @map("patient_id")
+  doctorId            String            @map("doctor_id")
+  facilityId          String?           @map("facility_id")
+  appointmentType     AppointmentType   @map("appointment_type")
+  startTime           DateTime          @map("start_time") @db.Timestamptz
+  endTime             DateTime          @map("end_time") @db.Timestamptz
+  durationMinutes     Int               @map("duration_minutes")
+  status              AppointmentStatus @default(pending_confirmation)
+  cancellationReason  String?           @map("cancellation_reason")
+  cancelledBy         CancelledBy?      @map("cancelled_by")
+  reasonForVisit      String?           @map("reason_for_visit")
+  isFirstVisit        Boolean           @default(false) @map("is_first_visit")
+  consultationFeeMga  Int?              @map("consultation_fee_mga")
+  paymentStatus       PaymentStatus     @default(not_applicable) @map("payment_status")
+  paymentMethod       PaymentMethod?    @map("payment_method")
+  notes               String?
+  prescriptionStorageKey String?        @map("prescription_storage_key")
+  followUpRequired    Boolean           @default(false) @map("follow_up_required")
+  createdAt           DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime          @updatedAt @map("updated_at") @db.Timestamptz
+
+  patient  User      @relation("PatientAppointments", fields: [patientId], references: [id])
+  doctor   User      @relation("DoctorAppointments", fields: [doctorId], references: [id])
+  facility Facility? @relation(fields: [facilityId], references: [id])
+
+  videoSession     VideoSession?
+  notificationLogs NotificationLog[]
+
+  @@index([patientId, startTime(sort: Desc)])
+  @@index([doctorId, startTime])
+  // Planner hint: use IN() not ANY() for status filtering on this index
+  @@index([status, startTime])
+  @@map("appointments")
+  @@schema("appointments")
+}
+
+model SlotLock {
+  id        String   @id @default(dbgenerated("gen_random_uuid()"))
+  doctorId  String   @map("doctor_id")
+  slotTime  DateTime @map("slot_time") @db.Timestamptz
+  userId    String   @map("user_id")
+  lockToken String   @unique @map("lock_token")
+  expiresAt DateTime @map("expires_at") @db.Timestamptz
+
+  @@unique([doctorId, slotTime])
+  @@index([expiresAt])
+  @@map("slot_locks")
+  @@schema("appointments")
+}
+
+model Waitlist {
+  id        String   @id @default(dbgenerated("gen_random_uuid()"))
+  patientId String   @map("patient_id")
+  doctorId  String   @map("doctor_id")
+  date      DateTime @db.Date
+  priority  Int      @default(0)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("waitlist")
+  @@schema("appointments")
+}
+
+// ─── scheduling schema ──────────────────────────────────────────────
+
+model WeeklyScheduleTemplate {
+  id                  String                  @id @default(dbgenerated("gen_random_uuid()"))
+  doctorId            String                  @map("doctor_id")
+  facilityId          String?                 @map("facility_id")
+  dayOfWeek           Int                     @map("day_of_week")
+  startTime           DateTime                @map("start_time") @db.Time()
+  endTime             DateTime                @map("end_time") @db.Time()
+  appointmentType     ScheduleAppointmentType @map("appointment_type")
+  slotDurationMinutes Int                     @default(30) @map("slot_duration_minutes")
+  bufferMinutes       Int                     @default(0) @map("buffer_minutes")
+  maxBookingsPerSlot  Int                     @default(1) @map("max_bookings_per_slot")
+  isActive            Boolean                 @default(true) @map("is_active")
+  effectiveFrom       DateTime                @map("effective_from") @db.Date
+  effectiveUntil      DateTime?               @map("effective_until") @db.Date
+
+  doctor User @relation(fields: [doctorId], references: [id])
+
+  @@index([doctorId, dayOfWeek])
+  // v1.4 fix: uniqueness partial index — prevents overlapping templates for the
+  // same doctor+facility+day. Applied via raw SQL migration since Prisma cannot
+  // express partial unique indexes natively. See migration for:
+  // CREATE UNIQUE INDEX ... ON scheduling.weekly_templates (doctor_id, facility_id, day_of_week, start_time)
+  // WHERE is_active = true;
+  @@map("weekly_templates")
+  @@schema("scheduling")
+}
+
+model ScheduleException {
+  id              String        @id @default(dbgenerated("gen_random_uuid()"))
+  doctorId        String        @map("doctor_id")
+  exceptionDate   DateTime      @map("exception_date") @db.Date
+  exceptionType   ExceptionType @map("exception_type")
+  customStartTime DateTime?     @map("custom_start_time") @db.Time()
+  customEndTime   DateTime?     @map("custom_end_time") @db.Time()
+  reason          String?
+  createdAt       DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+
+  doctor User @relation(fields: [doctorId], references: [id])
+
+  @@index([doctorId, exceptionDate])
+  @@map("exceptions")
+  @@schema("scheduling")
+}
+
+// ─── notifications schema ───────────────────────────────────────────
+
+model NotificationLog {
+  id            String              @id @default(dbgenerated("gen_random_uuid()"))
+  userId        String              @map("user_id")
+  appointmentId String?             @map("appointment_id")
+  channel       NotificationChannel
+  recipient     String
+  subject       String?
+  body          String
+  status        NotificationStatus  @default(pending)
+  providerMsgId String?             @map("provider_msg_id")
+  retryCount    Int                 @default(0) @map("retry_count")
+  sentAt        DateTime?           @map("sent_at") @db.Timestamptz
+  createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz
+
+  appointment Appointment? @relation(fields: [appointmentId], references: [id])
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([appointmentId])
+  @@map("notification_log")
+  @@schema("notifications")
+}
+
+model NotificationPreference {
+  id              String  @id @default(dbgenerated("gen_random_uuid()"))
+  userId          String  @unique @map("user_id")
+  smsEnabled      Boolean @default(true) @map("sms_enabled")
+  emailEnabled    Boolean @default(true) @map("email_enabled")
+  pushEnabled     Boolean @default(true) @map("push_enabled")
+  quietHoursStart String? @map("quiet_hours_start")
+  quietHoursEnd   String? @map("quiet_hours_end")
+
+  @@map("notification_preferences")
+  @@schema("notifications")
+}
+
+// SMS opt-out tracking — users can text STOP to unsubscribe
+model SmsOptOut {
+  id        String   @id @default(dbgenerated("gen_random_uuid()"))
+  phone     String   @unique
+  optedOutAt DateTime @default(now()) @map("opted_out_at") @db.Timestamptz
+
+  @@map("sms_opt_outs")
+  @@schema("notifications")
+}
+
+// ─── video schema ───────────────────────────────────────────────────
+
+model VideoSession {
+  id              String    @id @default(dbgenerated("gen_random_uuid()"))
+  appointmentId   String    @unique @map("appointment_id")
+  roomName        String    @map("room_name")
+  startedAt       DateTime? @map("started_at") @db.Timestamptz
+  endedAt         DateTime? @map("ended_at") @db.Timestamptz
+  durationSeconds Int?      @map("duration_seconds")
+  recordingKey    String?   @map("recording_key")
+  createdAt       DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  appointment    Appointment     @relation(fields: [appointmentId], references: [id])
+  consentRecords ConsentRecord[]
+
+  @@map("sessions")
+  @@schema("video")
+}
+
+model ConsentRecord {
+  id             String   @id @default(dbgenerated("gen_random_uuid()"))
+  videoSessionId String   @map("video_session_id")
+  userId         String   @map("user_id")
+  consentType    String   @map("consent_type")
+  grantedAt      DateTime @default(now()) @map("granted_at") @db.Timestamptz
+
+  videoSession VideoSession @relation(fields: [videoSessionId], references: [id])
+
+  @@map("consent_records")
+  @@schema("video")
+}
+
+// ─── analytics schema ───────────────────────────────────────────────
+
+model AnalyticsEvent {
+  id        String   @id @default(dbgenerated("gen_random_uuid()"))
+  eventType String   @map("event_type")
+  payload   Json
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@index([eventType, createdAt])
+  @@map("events")
+  @@schema("analytics")
+}

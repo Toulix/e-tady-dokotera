@@ -7,6 +7,12 @@
     "dev": "ts-node -r tsconfig-paths/register src/main.ts",
     "// build": "Compiles TypeScript to dist/ using the build-specific tsconfig (excludes tests)",
     "build": "tsc -p tsconfig.build.json",
+    "// db:migrate": "Creates and applies a new migration in development/ This tells Prisma to create the table in PostgreSQL.",
+    "db:migrate": "npx prisma migrate dev --name init",
+    "// db:generate": "Generates the Prisma client from the schema (run after schema changes)",
+    "db:generate": "npx prisma generate",
+    "// db:migrate:deploy": "Applies pending migrations non-interactively — use in CI and production",
+    "db:migrate:deploy": "prisma migrate deploy",
     "test": "jest",
     "lint": "eslint src/"
   },
@@ -23,7 +29,10 @@
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^11.1.14",
+    "@nestjs/platform-socket.io": "^11.1.16",
     "@nestjs/throttler": "^6.5.0",
+    "@nestjs/websockets": "^11.1.16",
+    "@prisma/adapter-pg": "^7.4.2",
     "@prisma/client": "^7.4.2",
     "bullmq": "^5.70.1",
     "class-transformer": "^0.5.1",
@@ -34,9 +43,9 @@
     "ioredis": "^5.10.0",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
-    "prisma": "^7.4.2",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
+    "socket.io": "^4.8.3",
     "tsconfig-paths": "^4.2.0"
   },
   "devDependencies": {
@@ -44,6 +53,7 @@
     "@types/express": "^5.0.6",
     "@types/node": "^25.3.2",
     "@types/passport-jwt": "^4.0.1",
+    "prisma": "^7.4.2",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   },
