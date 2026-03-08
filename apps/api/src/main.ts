@@ -52,6 +52,22 @@ async function bootstrap() {
   const serverAdapter = new ExpressAdapter();
   serverAdapter.setBasePath('/admin/queues');
   createBullBoard({ queues: [], serverAdapter });
+
+  // CRIT-03 fix: IP allowlist before basicAuth. HTTP Basic Auth is base64-encoded
+  // (not encrypted) — credentials are plaintext if traffic reaches port 3000 directly
+  // (e.g. if Nginx is bypassed). Defense-in-depth: restrict to known IPs first.
+  // Set ADMIN_ALLOWED_IPS=1.2.3.4,5.6.7.8 in .env.production. In development the
+  // check is skipped so the board is accessible locally without configuration.
+  app.use('/admin/queues', (req: any, res: any, next: any) => {
+    const allowedIps = (config.get<string>('ADMIN_ALLOWED_IPS', '') ?? '').split(',').filter(Boolean);
+    if (config.get('NODE_ENV') === 'production' && allowedIps.length > 0) {
+      const clientIp = req.ip ?? req.socket?.remoteAddress;
+      if (!allowedIps.includes(clientIp)) {
+        return res.status(403).json({ message: 'Forbidden' });
+      }
+    }
+    next();
+  });
   app.use(
     '/admin/queues',
     basicAuth({
