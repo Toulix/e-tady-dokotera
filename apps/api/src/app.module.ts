@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, NestModule, MiddlewareConsumer } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { BullModule } from '@nestjs/bullmq';
 import { EventEmitterModule } from '@nestjs/event-emitter';
@@ -7,6 +7,7 @@ import { ThrottlerStorageRedisService } from '@nest-lab/throttler-storage-redis'
 import Redis from 'ioredis';
 import { RedisModule, REDIS_CLIENT } from './shared/redis/redis.module';
 import { DatabaseModule } from './shared/database/database.module';
+import { RequestIdMiddleware } from './shared/middleware/request-id.middleware';
 import { AuthModule } from './modules/auth/auth.module';
 import { DoctorsModule } from './modules/doctors/doctors.module';
 import { AppointmentsModule } from './modules/appointments/appointments.module';
@@ -20,7 +21,6 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
     // Config must be first — everything else depends on ConfigService
     ConfigModule.forRoot({
       isGlobal: true,
-      envFilePath: '.env',
       cache: true,
     }),
 
@@ -75,4 +75,8 @@ import { AnalyticsModule } from './modules/analytics/analytics.module';
     AnalyticsModule,
   ],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(RequestIdMiddleware).forRoutes('*');
+  }
+}
