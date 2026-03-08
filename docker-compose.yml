@@ -2,15 +2,24 @@ services:
   postgres:
     image: postgis/postgis:16-3.4
     environment:
-      POSTGRES_DB: madagascar_health
+      POSTGRES_DB: e_tady_dokotera
       POSTGRES_USER: dev
       POSTGRES_PASSWORD: dev
+      # NOTE: postgis/postgis:16-3.4 ignores this env var and always creates all 4
+      # extensions (postgis, fuzzystrmatch, postgis_tiger_geocoder, postgis_topology).
+      # The real fix is infra/docker/drop-unused-extensions.sql (initdb script 20-)
+      # which drops all 4 so Prisma owns postgis via its migration history.
+      # Kept here as documentation intent only.
+      POSTGRES_MULTIPLE_EXTENSIONS: postgis
     ports: ["5432:5432"]
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./infra/docker/init-schemas.sql:/docker-entrypoint-initdb.d/01-schemas.sql
+      # Runs after PostGIS's own 10_postgis.sh to drop extensions we don't need.
+      # This prevents Prisma drift errors caused by extensions outside its control.
+      - ./infra/docker/drop-unused-extensions.sql:/docker-entrypoint-initdb.d/20-drop-unused-extensions.sql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U dev"]
+      test: ["CMD-SHELL", "pg_isready -U dev -d e_tady_dokotera"]
       interval: 5s
       timeout: 5s
       retries: 5
@@ -37,7 +46,7 @@ services:
     # are reachable by their Compose service names instead.
     env_file: .env
     environment:
-      DATABASE_URL: "postgresql://dev:dev@postgres:5432/madagascar_health"
+      DATABASE_URL: "postgresql://dev:dev@postgres:5432/e_tady_dokotera"
       REDIS_HOST: redis
     volumes:
       - ./apps/api/src:/app/src
