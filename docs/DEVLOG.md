@@ -39,3 +39,17 @@ GET  localhost:3000/admin/queues  → HTTP 401 (BullBoard running inside NestJS,
      postgres                     → healthy (PostGIS 16-3.4, schemas initialised)
      redis                        → healthy (noeviction policy enforced)
 ```
+
+
+### 2026-03-01 — Phase 0 / Step 2: Docker Compose local dev environment
+
+Fix the issue of prisma schema drift
+Root cause: The postgis/postgis:16-3.4 Docker image auto-creates 4 extensions (postgis, fuzzystrmatch, postgis_tiger_geocoder,
+  postgis_topology) before Prisma runs, causing permanent drift.
+
+  Fix (3 files):
+
+  1. schema.prisma — trimmed extensions to just [postgis] (the only one needed for geometry(Point, 4326))
+  2. docker-compose.yml — added a second init script volume mount (20-drop-unused-extensions.sql)
+  3. infra/docker/drop-unused-extensions.sql (new) — drops all 4 auto-created extensions so Prisma creates postgis itself during
+  migration, keeping it in sync with its history

@@ -166,7 +166,7 @@ services:
   postgres:
     image: postgis/postgis:16-3.4
     environment:
-      POSTGRES_DB: madagascar_health
+      POSTGRES_DB: e_tady_dokotera
       POSTGRES_USER: dev
       POSTGRES_PASSWORD: dev
     ports: ["5432:5432"]
@@ -249,7 +249,7 @@ CREATE SCHEMA IF NOT EXISTS payments;  -- Phase 2: Mobile Money (Orange Money, M
 
 ```bash
 # Database
-DATABASE_URL="postgresql://dev:dev@localhost:5432/madagascar_health"
+DATABASE_URL="postgresql://dev:dev@localhost:5432/e_tady_dokotera"
 
 # Redis
 REDIS_HOST=localhost
@@ -312,7 +312,7 @@ services:
   postgres-test:
     image: postgis/postgis:16-3.4
     environment:
-      POSTGRES_DB: madagascar_health_test
+      POSTGRES_DB: e_tady_dokotera_test
       POSTGRES_USER: test
       POSTGRES_PASSWORD: test
     ports: ["5433:5432"]  # different port to avoid conflicting with dev postgres
@@ -339,7 +339,7 @@ services:
 Add to `.env.test` (committed, no secrets):
 
 ```bash
-DATABASE_URL="postgresql://test:test@localhost:5433/madagascar_health_test"
+DATABASE_URL="postgresql://test:test@localhost:5433/e_tady_dokotera_test"
 REDIS_HOST=localhost
 REDIS_PORT=6380
 REDIS_PASSWORD=
@@ -785,6 +785,15 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
 This is the most important step in Phase 0. The full database schema must be written and migrated before a single business logic file is created. Changing the schema later is expensive.
 
+
+in Prisma v7 `npx prisma generate` must be run explicitly after prisma migrate dev.
+Starting with Prisma v7, migrate dev no longer automatically triggers prisma generate. You must run it manually
+
+Develop & iterate
+1 - Change schema.prisma
+2 - Run  `prisma migrate dev --name name_of_migration` // means create and apply a new migration, and call it name_of_migration
+3 - Run `npx prisma generate`
+
 `apps/api/prisma/schema.prisma` — key patterns to enforce:
 
 ```jsx
@@ -796,15 +805,21 @@ generator client {
   // for when they reach stable — the API may change on promotion.
 }
 
+Configure your database connection in prisma.config.ts instead:
+[Link](https://www.prisma.io/docs/guides/upgrade-prisma-orm/v7#after-v7)
+
 datasource db {
   provider   = "postgresql"
-  url        = env("DATABASE_URL")
+  url        = env("DATABASE_URL") // incorrect for v7, add database connection in  prisma.config.ts
   schemas    = ["auth", "doctors", "appointments", "scheduling",
                 "notifications", "video", "analytics", "payments"]
   extensions = [postgis, pg_trgm]
   // v1.6: "payments" added (Phase 10 module — Phase 2 scope but schema must exist from day 1)
   // v1.6: uuidOssp removed — gen_random_uuid() is native to PostgreSQL 13+, no extension needed
 }
+
+## Hint
+The @nestjs/config package internally uses dotenv so no need to install it manually
 
 // --- auth schema ---
 model User {
