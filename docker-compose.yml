@@ -61,6 +61,20 @@ services:
       - ./apps/web/src:/app/src
     command: pnpm dev
 
+  prisma-studio:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile.dev
+    ports: ["5555:5555"]
+    depends_on:
+      postgres: { condition: service_healthy }
+    # Reuses the api image (same Dockerfile) — Docker will use its build cache.
+    # Only DATABASE_URL is needed; Redis is not used by Prisma Studio.
+    env_file: .env
+    environment:
+      DATABASE_URL: "postgresql://dev:dev@postgres:5432/e_tady_dokotera"
+    command: pnpm exec prisma studio --port 5555 --browser none
+
   # NOTE: Bull Board is NOT a separate container — it runs inside the NestJS app.
   # Access it at http://localhost:3000/admin/queues (password-protected).
   # The deadly0/bull-board Docker image only supports Bull v3/v4 and is
