@@ -142,12 +142,30 @@ The `web` container runs `pnpm dev`, which starts the Vite development server. V
 
 ```
 http://localhost:5173          →  React frontend (Vite HMR active)
+http://localhost:5173/wiki     →  Tech Stack Wiki (see below)
 http://localhost:3000/api/v1   →  NestJS REST API
 http://localhost:3000/health   →  Health check  {"success":true,"data":{"status":"ok"}}
 http://localhost:3000/admin/queues  →  BullMQ dashboard (requires password)
 localhost:5432                 →  PostgreSQL (user: dev, password: dev, db: e_tady_dokotera)
 localhost:6379                 →  Redis
 ```
+
+---
+
+### Tech Stack Wiki
+
+**URL:** `http://localhost:5173/wiki`
+
+An interactive reference that explains every technology used in this project — what it is, why it was chosen, and what would break without it. Written for all developers, including juniors joining the team.
+
+**Features:**
+- 42 technologies documented across 18 categories (Backend, Database, Cache & Queue, Auth, Testing, etc.)
+- Full-text search across names, categories, and descriptions
+- Category filter pills to focus on one layer of the stack
+- Sticky sidebar with scroll-based highlighting — jump to any technology instantly
+- Quick Reference table at the bottom: maps common problems to the tool that solves them
+
+The source data lives in [`apps/web/src/pages/wiki/techStackData.ts`](apps/web/src/pages/wiki/techStackData.ts). If you add a new dependency worth explaining to the project, add an entry there.
 
 ---
 

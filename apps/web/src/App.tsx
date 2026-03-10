@@ -11,11 +11,15 @@ import SchedulePage from './pages/doctor/SchedulePage';
 import LoginPage from './pages/auth/LoginPage';
 import RegisterPage from './pages/auth/RegisterPage';
 import VerifyOtpPage from './pages/auth/VerifyOtpPage';
+import TechStackWikiPage from './pages/wiki/TechStackWikiPage';
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
+        {/* Standalone route — wiki has its own layout */}
+        <Route path="/wiki" element={<TechStackWikiPage />} />
+
         <Route element={<AppShell />}>
           <Route path="/" element={<HomePage />} />
           <Route path="/search" element={<SearchPage />} />
