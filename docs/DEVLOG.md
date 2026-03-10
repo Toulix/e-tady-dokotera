@@ -53,3 +53,19 @@ Root cause: The postgis/postgis:16-3.4 Docker image auto-creates 4 extensions (p
   2. docker-compose.yml — added a second init script volume mount (20-drop-unused-extensions.sql)
   3. infra/docker/drop-unused-extensions.sql (new) — drops all 4 auto-created extensions so Prisma creates postgis itself during
   migration, keeping it in sync with its history
+
+
+All 5 endpoints pass. Here's the summary:
+
+Endpoint	Status	Key Behavior
+POST /verify-otp	200	Returns access_token in body, Set-Cookie: refresh_token=<jwt>; HttpOnly; SameSite=Strict; Path=/; Max-Age=604800
+POST /login	200	Same token delivery pattern — access in body, refresh in cookie
+POST /refresh	200	Reads cookie, rotates tokens (new cookie + new access_token), old refresh invalidated via bcrypt hash
+POST /logout	200	{ message: "Logged out" }, clears cookie (Expires=Thu, 01 Jan 1970), deletes Redis key
+POST /refresh after logout	401	"Refresh token not found — please log in again"
+All security invariants are verified:
+
+Refresh token never appears in JSON body — cookie only
+Cookie flags: HttpOnly, SameSite=Strict, Path=/
+Token rotation on /refresh (bcrypt-hashed storage in Redis)
+Post-logout refresh is properly rejected
