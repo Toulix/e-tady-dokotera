@@ -156,7 +156,7 @@ localhost:6379                 →  Redis
 
 **URL:** `http://localhost:5173/wiki`
 
-An interactive reference that explains every technology used in this project — what it is, why it was chosen, and what would break without it. Written for all developers, including juniors joining the team.
+An interactive reference that explains every technology used in this project — what it is, why it was chosen, and what would break without it. Written for all developers, joining the team.
 
 **Features:**
 - 42 technologies documented across 18 categories (Backend, Database, Cache & Queue, Auth, Testing, etc.)

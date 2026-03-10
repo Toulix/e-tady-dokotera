@@ -361,7 +361,7 @@ export default function TechStackWikiPage() {
           {/* Intro */}
           <div className="mb-8 rounded-xl border border-blue-200 bg-blue-50 p-5">
             <p className="text-sm leading-relaxed text-blue-800">
-              <strong>Audience:</strong> All developers (including juniors). This
+              <strong>Audience:</strong> All developers. This
               document explains every technology we use, <strong>why</strong> we
               chose it, and <strong>what would go wrong</strong> if we didn't use
               it. If you're new to the team, read this first.
