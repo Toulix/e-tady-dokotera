@@ -292,10 +292,6 @@ pnpm --filter @e-tady-dokotera/api db:migrate:deploy
 
 **Prisma Studio** — visual database browser:
 
-```bash
-cd apps/api && npx prisma studio
-```
-
 Opens at `http://localhost:5555` — lets you browse and edit all tables across every schema without writing SQL.
 
 **Schema conventions:**
