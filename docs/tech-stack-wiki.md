@@ -829,7 +829,7 @@ Terraform is an **Infrastructure as Code (IaC)** tool. Instead of clicking throu
 ```hcl
 # This code creates our production Droplet
 resource "digitalocean_droplet" "api" {
-  name   = "madagascar-health-api"
+  name   = "e-tady-dokotera-api"
   region = "ams3"
   size   = "s-2vcpu-4gb"
   image  = "docker-20-04"

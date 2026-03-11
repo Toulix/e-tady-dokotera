@@ -1,223 +1,456 @@
 # e-tady-dokotera
 
-Healthcare appointment booking platform for Madagascar.
+Healthcare appointment booking platform for Madagascar — connecting patients with doctors via online booking, SMS notifications, and video consultations.
 
 ---
 
-## What happens when you run `docker compose up`
+## Overview
 
-This command starts the full local development stack: a database, a cache, a backend API, and a frontend — all wired together and ready to use. Here is exactly what Docker does, step by step.
+e-tady-dokotera ("Looking for a doctor" in Malagasy) is a full-stack web platform that lets patients in Madagascar find doctors, book appointments, and receive SMS confirmations, with video consultation support.
 
----
-
-### Step 1 — Docker reads `docker-compose.yml`
-
-Docker parses the compose file and finds **4 services** to start:
-
-| Service    | Role                          | Port   |
-|------------|-------------------------------|--------|
-| `postgres`  | PostgreSQL 16 + PostGIS        | 5432   |
-| `redis`     | Redis 7 cache and job queue    | 6379   |
-| `api`       | NestJS REST API                | 3000   |
-| `web`       | React + Vite frontend          | 5173   |
+**Key features:**
+- Patient and doctor registration with OTP phone verification
+- Doctor search with fuzzy-text matching (`pg_trgm`) and geospatial proximity (PostGIS)
+- Appointment booking with two-layer slot locking (Redis TTL + PostgreSQL `SELECT FOR UPDATE`)
+- SMS notifications via Operators (Orange Madagascar, etc) (BullMQ async queue with retry)
+- Real-time updates via WebSocket (Socket.io)
+- Video consultations via Jitsi Meet (Phase 7)
+- BullMQ admin dashboard at `/admin/queues`
+- Interactive tech stack wiki at `/wiki`
 
 ---
 
-### Step 2 — Infrastructure services start first (`postgres` and `redis`)
+## Tech Stack
 
-The `api` service declares `depends_on` with `condition: service_healthy`, meaning Docker will not start the API until both `postgres` and `redis` pass their health checks. This prevents the API from crashing on startup because the database is not ready yet.
+**Frontend**
+- React 19, Vite 7, TailwindCSS 4, Zustand 5, React Router 6
 
-**PostgreSQL** starts and runs its initialization script automatically:
+**Backend**
+- NestJS 11, TypeScript 5.9, Passport JWT, Socket.io 4, BullMQ 5
 
-```
-infra/docker/init-schemas.sql  →  mounted at /docker-entrypoint-initdb.d/
-```
+**Database**
+- PostgreSQL 16 + PostGIS (geospatial queries) + `pg_trgm` (fuzzy search)
+- Prisma 7 ORM — schema-per-module layout
 
-That script does two things as soon as the database is created for the first time:
+**Cache / Queue**
+- Redis 7 (`noeviction` policy), BullMQ, ioredis
 
-1. **Installs PostgreSQL extensions** — `postgis` (geospatial queries) and `pg_trgm` (fuzzy text search for doctor names).
-2. **Creates all module schemas** — each domain module gets its own isolated namespace inside the single `e_tady_dokotera` database:
-
-```
-auth | doctors | appointments | scheduling | notifications | video | analytics | payments
-```
-
-PostgreSQL then confirms it is ready by responding to `pg_isready -U dev`. Only then does Docker allow the API to proceed.
-
-**Redis** starts with a specific memory policy:
-
-```
-redis-server --maxmemory 256mb --maxmemory-policy noeviction
-```
-
-The `noeviction` policy is critical — it makes Redis reject new writes when memory is full rather than silently deleting existing data. If `allkeys-lru` were used instead, Redis could evict BullMQ job records, causing queued jobs (SMS notifications, reminders) to disappear without any error. Redis confirms it is alive by responding to `redis-cli ping`.
+**Monorepo / Tooling**
+- Turborepo v2, pnpm 10.30, Docker Compose, GitHub Actions
 
 ---
 
-### Step 3 — The API image is built (`apps/api/Dockerfile.dev`)
+## Architecture
 
-If no image exists yet (first run), Docker builds it from [apps/api/Dockerfile.dev](apps/api/Dockerfile.dev). Here is what the build does, layer by layer:
+A **modular monolith** — one deployable NestJS process, with each domain owning a dedicated PostgreSQL schema. Cross-module communication uses domain events (`@nestjs/event-emitter`); no direct cross-module DB writes.
 
-**Layer 1 — Install pnpm (pinned version)**
-```dockerfile
-RUN corepack enable && corepack prepare pnpm@10.12.1 --activate
 ```
-pnpm is pinned to `10.12.1` rather than `latest` so every developer and CI run gets the exact same package manager. An unpinned version can silently change behaviour between builds.
-
-**Layer 2 — Copy manifests and install dependencies**
-```dockerfile
-COPY package.json tsconfig.json tsconfig.build.json ./
-RUN pnpm install
+React PWA (Vite)          React Native (mobile)
+       |                          |
+       +----------+---------------+
+                  |
+          NestJS REST API  ←──  Socket.io (WebSocket)
+                  |
+     +------------+-------------+
+     |            |             |
+  Redis 7      PostgreSQL 16   Jitsi Meet
+  (BullMQ,     (PostGIS,       (video)
+   slot lock,   pg_trgm,
+   JWT deny)    8 schemas)
+                  |
+              BullMQ Workers
+              (SMS, reminders)
 ```
-Only `package.json` and TypeScript config files are copied at this stage — not `src/`. This is intentional: Docker caches each layer independently. If you only change application source code, Docker reuses the cached `node_modules` layer and skips reinstalling packages, making subsequent builds much faster.
 
-**Layer 3 — Generate the Prisma client**
-```dockerfile
-COPY prisma.config.ts ./
-COPY prisma ./prisma
-RUN pnpm exec prisma generate
-```
-Prisma reads the schema and generates a type-safe client tailored to the database models. This must happen at build time so the application can import `@prisma/client` when it starts. If the schema changes, rebuild the image.
+**Module → schema mapping:**
 
-The `src/` directory is **not copied into the image**. It is volume-mounted at runtime (see Step 4), which means you can edit source files on your machine and the running container sees the changes immediately.
+| Module         | PostgreSQL Schema | Responsibility                              |
+|----------------|-------------------|---------------------------------------------|
+| `auth`         | `auth`            | JWT, OTP, refresh tokens, sessions          |
+| `doctors`      | `doctors`         | Profiles, specialties, geospatial search    |
+| `appointments` | `appointments`    | Booking, two-layer slot locking             |
+| `scheduling`   | `scheduling`      | Weekly templates, exceptions, slot generation |
+| `notifications`| `notifications`   | SMS (Orange MG), email, BullMQ queue        |
+| `video`        | `video`           | Jitsi Meet JWT tokens, consultation records |
+| `analytics`    | `analytics`       | Read-only cross-schema reporting            |
+| `payments`     | `payments`        | Mobile Money — Phase 2                      |
 
 ---
 
-### Step 4 — The web image is built (`apps/web/Dockerfile.dev`)
+## Project Structure
 
-Docker builds the frontend image from [apps/web/Dockerfile.dev](apps/web/Dockerfile.dev):
-
-**Install dependencies inside the container**
-```dockerfile
-RUN pnpm install
 ```
-Dependencies are installed *inside* the container, not copied from your host machine. This matters because some packages (like `esbuild`) compile native binaries for the current operating system. If you copy your Mac's `node_modules` into a Linux container, those binaries will be the wrong platform and will crash.
-
-**Copy only static config files**
-```dockerfile
-COPY index.html vite.config.ts tsconfig*.json ./
-COPY public/ ./public/
+/
+├── apps/
+│   ├── api/               # NestJS backend
+│   │   ├── src/
+│   │   │   ├── modules/   # Feature modules (auth, doctors, appointments, …)
+│   │   │   └── shared/    # Guards, filters, interceptors, events, Redis
+│   │   └── prisma/        # Prisma schema files
+│   ├── web/               # React 19 PWA (Vite)
+│   └── mobile/            # React Native (planned)
+├── packages/
+│   ├── shared-types/      # TypeScript types shared across apps
+│   └── ui/                # Shared UI components
+├── infra/
+│   ├── docker/            # init-schemas.sql, Dockerfiles
+│   └── terraform/         # DigitalOcean infrastructure (production)
+├── docs/                  # spec.md, roadmap.md, decisions.md, DEVLOG.md
+├── docker-compose.yml     # Local dev stack
+├── docker-compose.test.yml# Isolated integration test stack
+└── turbo.json             # Turborepo task graph
 ```
-`src/` is excluded here too — it is volume-mounted at runtime for the same reason as the API: so Vite's hot module replacement (HMR) can detect your file changes and instantly update the browser without rebuilding the image.
+
+Each module follows a strict layered structure:
+
+```
+modules/<name>/
+├── domain/          # Entities, value objects, repository interfaces
+├── application/     # Services, use cases, event handlers
+├── infrastructure/  # Repository implementations, Prisma calls
+└── api/             # Controllers, DTOs, guards
+```
 
 ---
 
-### Step 5 — Containers start and the API boots
+## Prerequisites
 
-With `postgres` and `redis` healthy, the `api` container runs:
+- **Node.js** >= 20.x
+- **pnpm** >= 10.x (`corepack enable && corepack prepare pnpm@10.30.3 --activate`)
+- **Docker** and **Docker Compose** (recommended for local dev)
+- PostgreSQL 16 + PostGIS and Redis 7 (only needed if running without Docker)
+
+---
+
+## Environment Variables
+
+Copy `.env.example` to `.env` and fill in values:
+
+```bash
+cp .env.example .env
+```
+
+| Variable                      | Description                                              | Example / Default                  |
+|-------------------------------|----------------------------------------------------------|------------------------------------|
+| `DATABASE_URL`                | PostgreSQL connection string                             | `postgresql://dev:dev@localhost:5432/e_tady_dokotera` |
+| `REDIS_HOST`                  | Redis hostname                                           | `localhost`                        |
+| `REDIS_PORT`                  | Redis port                                               | `6379`                             |
+| `REDIS_PASSWORD`              | Redis password (empty in dev)                            | —                                  |
+| `JWT_SECRET`                  | Secret key for signing access tokens                     | `change-me-in-production`          |
+| `JWT_ACCESS_EXPIRES_IN`       | Access token TTL                                         | `15m`                              |
+| `JWT_REFRESH_EXPIRES_IN`      | Refresh token TTL                                        | `7d`                               |
+| `PORT`                        | API port                                                 | `3000`                             |
+| `TZ`                          | Server timezone                                          | `Indian/Antananarivo`              |
+| `FRONTEND_URL`                | Allowed CORS origin                                      | `http://localhost:5173`            |
+| `BULL_BOARD_PASSWORD`         | HTTP Basic Auth password for `/admin/queues`             | `change-me`                        |
+| `ADMIN_ALLOWED_IPS`           | Comma-separated IPs allowed to reach `/admin/queues` in production | —              |
+| `SMS_PROVIDER`                | SMS adapter (`mock` in dev, `orange` in prod)            | `mock`                             |
+| `STORAGE_BUCKET`              | S3-compatible bucket name                                | `e-tady-dokotera-dev`              |
+| `STORAGE_ENDPOINT`            | S3-compatible endpoint (DigitalOcean Spaces in prod)     | —                                  |
+| `STORAGE_ACCESS_KEY`          | S3 access key                                            | —                                  |
+| `STORAGE_SECRET_KEY`          | S3 secret key                                            | —                                  |
+| `SENTRY_DSN`                  | Backend Sentry DSN (leave empty in dev)                  | —                                  |
+| `VITE_SENTRY_DSN`             | Frontend Sentry DSN                                      | —                                  |
+| `JITSI_APP_ID`                | Jitsi Meet application ID (Phase 7)                      | —                                  |
+| `JITSI_APP_SECRET`            | Jitsi Meet secret for JWT signing (Phase 7)              | —                                  |
+| `JITSI_DOMAIN`                | Jitsi Meet domain                                        | `video.yourdomain.com`             |
+| `FIREBASE_SERVICE_ACCOUNT_BASE64` | Base64-encoded Firebase service account (Phase 9)   | —                                  |
+
+---
+
+## Installation
+
+```bash
+# 1. Clone the repository
+git clone https://github.com/Toulix/e-tady-dokotera.git
+cd e-tady-dokotera
+
+# 2. Install dependencies
+pnpm install
+
+# 3. Configure environment
+cp .env.example .env
+# Edit .env — DATABASE_URL, JWT_SECRET, and BULL_BOARD_PASSWORD at minimum
+```
+
+---
+
+## Running the Application
+
+**Start the full local stack with Docker (recommended):**
+
+```bash
+docker compose up
+```
+
+Docker starts 4 services in dependency order:
+
+| Service    | Role                                    | Port  |
+|------------|-----------------------------------------|-------|
+| `postgres`  | PostgreSQL 16 + PostGIS + `pg_trgm`     | 5432  |
+| `redis`     | Redis 7 (BullMQ queues, slot locking)   | 6379  |
+| `api`       | NestJS REST API                         | 3000  |
+| `web`       | React + Vite (HMR)                      | 5173  |
+
+Database schemas (`auth`, `doctors`, `appointments`, …) and extensions (`postgis`, `pg_trgm`) are created automatically on first run via `infra/docker/init-schemas.sql`. No manual migration step is needed to start.
+
+Source code in `apps/api/src/` and `apps/web/src/` is volume-mounted — edits take effect immediately without rebuilding.
+
+**Available once running:**
 
 ```
+http://localhost:5173          →  React frontend
+http://localhost:5173/wiki     →  Interactive tech stack wiki
+http://localhost:3000/api/v1   →  REST API base
+http://localhost:3000/health   →  Health check (no auth required)
+http://localhost:3000/admin/queues  →  BullMQ dashboard (HTTP Basic Auth)
+```
+
+**Or run services individually (requires local Postgres and Redis):**
+
+```bash
+# Start only infra
+docker compose up postgres redis -d
+
+# Backend
+cd apps/api
+pnpm dev
+
+# Frontend (separate terminal)
+cd apps/web
 pnpm dev
 ```
 
-NestJS starts up and performs the following initialization in [apps/api/src/main.ts](apps/api/src/main.ts):
-
-1. **Helmet** — sets secure HTTP response headers (XSS protection, content sniffing prevention, etc.).
-2. **Cookie parser** — enables the API to read the `HttpOnly` refresh token cookie that the browser sends on every request.
-3. **CORS** — allows only `http://localhost:5173` (the frontend) to make credentialed cross-origin requests. This prevents other websites from calling the API on behalf of a logged-in user.
-4. **Validation pipe** — automatically validates every incoming request body against its DTO class. Unknown fields are stripped; invalid payloads are rejected with a `400` before they reach any business logic.
-5. **Global prefix** — all API routes are mounted under `/api/v1` (e.g. `GET /api/v1/doctors`).
-6. **Bull Board** — a web dashboard for inspecting BullMQ job queues, mounted at `/admin/queues` and protected by HTTP Basic Auth. This is not a separate container — it runs inside the NestJS process.
-7. **Health endpoint** — `GET /health` is registered outside the `/api/v1` prefix so monitoring tools can check liveness without authentication.
-
-**Environment variable resolution** — the compose file loads `.env` via `env_file`, then overrides two values that must differ inside Docker:
-
-```yaml
-environment:
-  DATABASE_URL: "postgresql://dev:dev@postgres:5432/madagascar_health"
-  REDIS_HOST: redis
-```
-
-Inside a Docker network, `localhost` means the container itself, not another service. The service names `postgres` and `redis` are the correct hostnames within the Docker network.
-
----
-
-### Step 6 — The frontend starts
-
-The `web` container runs `pnpm dev`, which starts the Vite development server. Vite is configured to bind to `0.0.0.0` (all network interfaces inside the container) so that Docker can forward port `5173` to your machine. If it only bound to `127.0.0.1` inside the container, the port mapping would silently not work.
-
----
-
-### What you have when everything is running
-
-```
-http://localhost:5173          →  React frontend (Vite HMR active)
-http://localhost:5173/wiki     →  Tech Stack Wiki (see below)
-http://localhost:3000/api/v1   →  NestJS REST API
-http://localhost:3000/health   →  Health check  {"success":true,"data":{"status":"ok"}}
-http://localhost:3000/admin/queues  →  BullMQ dashboard (requires password)
-localhost:5432                 →  PostgreSQL (user: dev, password: dev, db: e_tady_dokotera)
-localhost:6379                 →  Redis
-```
-
----
-
-### Tech Stack Wiki
-
-**URL:** `http://localhost:5173/wiki`
-
-An interactive reference that explains every technology used in this project — what it is, why it was chosen, and what would break without it. Written for all developers, joining the team.
-
-**Features:**
-- 42 technologies documented across 18 categories (Backend, Database, Cache & Queue, Auth, Testing, etc.)
-- Full-text search across names, categories, and descriptions
-- Category filter pills to focus on one layer of the stack
-- Sticky sidebar with scroll-based highlighting — jump to any technology instantly
-- Quick Reference table at the bottom: maps common problems to the tool that solves them
-
-The source data lives in [`apps/web/src/pages/wiki/techStackData.ts`](apps/web/src/pages/wiki/techStackData.ts). If you add a new dependency worth explaining to the project, add an entry there.
-
----
-
-### Volume mounts — why your edits take effect immediately
-
-| Host path           | Container path | Effect                                          |
-|---------------------|----------------|-------------------------------------------------|
-| `./apps/api/src`    | `/app/src`     | Edit backend code → NestJS reloads automatically |
-| `./apps/web/src`    | `/app/src`     | Edit frontend code → Vite updates the browser instantly |
-| `pgdata` (named volume) | `/var/lib/postgresql/data` | Database data persists across `docker compose down` and restarts |
-
----
-
-### Common commands
+**Common Docker commands:**
 
 ```bash
-# Start everything
-docker compose up
+docker compose up -d               # Start in background
+docker compose logs -f api         # Stream API logs
+docker compose down                # Stop (data preserved)
+docker compose down -v             # Stop and wipe the database volume
+docker compose build               # Rebuild images after Dockerfile or dependency changes
+```
 
-# Start in the background
-docker compose up -d
+### What happens when you run `docker compose up`
 
-# View logs for one service
-docker compose logs -f api
+Four services start in the right order automatically. Here is what each one does and why it matters.
 
-# Stop everything (data is preserved)
-docker compose down
+**1. Database (PostgreSQL) and cache (Redis) start first**
 
-# Stop everything and delete the database volume (full reset)
-docker compose down -v
+The API waits for both to be confirmed ready before booting — this is enforced via `depends_on` with a health check condition, which prevents connection errors on startup.
 
-# Rebuild images after changing a Dockerfile or adding a dependency
-docker compose build
-docker compose up
+The database sets itself up automatically on first boot: it installs the extensions needed for map-based doctor search and fuzzy name matching (`PostGIS` and `pg_trgm`), then creates a separate schema (database namespace) for each feature area — auth, appointments, notifications, etc. No manual setup is needed.
+
+Redis starts with a safety setting called the `noeviction` policy — it rejects new writes when memory is full rather than silently discarding existing data. Without it, BullMQ jobs (background tasks like SMS notifications and reminders) could be lost with no error or trace.
+
+**2. The backend image is built (first run only)**
+
+Docker installs dependencies then runs `prisma generate` to build the type-safe database client from the schema. Both steps are layer-cached — on subsequent builds, Docker reuses the cached `node_modules` layer and skips reinstall if only application code changed. The `src/` directory is not baked into the image; it is volume-mounted (linked live from the host machine) so code changes take effect immediately without a rebuild.
+
+**3. The frontend image is built (first run only)**
+
+Dependencies are installed inside the container rather than copied from the host. This matters because packages like `esbuild` compile platform-specific native binaries — a macOS `node_modules` copied into a Linux container will crash at runtime. The `src/` directory is volume-mounted as well, enabling HMR (hot module replacement) so the browser reflects file changes within milliseconds.
+
+**4. The API boots**
+
+Before accepting any request, NestJS runs through a middleware stack: Helmet adds security headers, cookie-parser reads the `HttpOnly` refresh token, CORS restricts cross-origin requests to the frontend origin only, and a global validation pipe strips unknown fields and rejects malformed payloads with a `400` — all before any business logic runs. Once ready, all routes are served under `/api/v1`.
+
+> **Why are `DATABASE_URL` and `REDIS_HOST` overridden in the compose file?**
+> The `.env` file uses `localhost` for host-side development. Inside the Docker network, containers resolve each other by service name (`postgres`, `redis`) — `localhost` would point to the container itself. The compose file overrides just those two values; everything else comes from `.env`.
+
+**5. The frontend starts**
+
+Vite binds to `0.0.0.0` (all network interfaces inside the container) so Docker can forward port `5173` to the host. Binding to `127.0.0.1` instead would silently break the port mapping. Changes in `apps/web/src/` appear in the browser instantly via HMR.
+
+**Edits are always live — no rebuild needed:**
+
+| What changes                        | What to do                                              |
+|-------------------------------------|---------------------------------------------------------|
+| `apps/api/src/`                     | Backend hot-reloads automatically                       |
+| `apps/web/src/`                     | Browser updates instantly via HMR                       |
+| A `Dockerfile` or `package.json`    | Run `docker compose build` then `docker compose up`     |
+| The Prisma schema                   | Run `docker compose build` to re-run `prisma generate`  |
+
+---
+
+## Database
+
+Uses **PostgreSQL 16** with **PostGIS** (geospatial doctor search) and **`pg_trgm`** (fuzzy doctor name search). **Prisma 7** is the ORM — all DB calls go through a Repository class; no `$queryRaw` outside of repositories.
+
+**Migrations:**
+
+```bash
+# Create and apply a new migration (dev only)
+pnpm --filter @e-tady-dokotera/api db:migrate
+
+# Regenerate the Prisma client after schema changes
+pnpm --filter @e-tady-dokotera/api db:generate
+
+# Apply pending migrations non-interactively (CI / production)
+pnpm --filter @e-tady-dokotera/api db:migrate:deploy
+```
+
+**Schema conventions:**
+- All IDs: `String @id @default(uuid())`
+- All timestamps: `@db.Timestamptz`
+- All monetary values: `Int` (Ariary as integer, never `Decimal` or `Float`)
+- PostGIS columns: `Unsupported("geometry(Point, 4326)")` — queried via `$queryRaw`
+
+---
+
+## Redis
+
+Redis runs with `--maxmemory-policy noeviction` — it rejects new writes when full rather than silently evicting data. This is required for BullMQ: `allkeys-lru` would silently drop queued jobs.
+
+Redis is used for:
+- **Slot locking** — short-TTL keys reserve appointment slots while a patient completes checkout
+- **BullMQ job queues** — SMS confirmations, appointment reminders, cancellation notifications
+- **JWT denylist** — invalidated tokens tracked per user on logout/suspend
+- **Rate limiting** — per-phone OTP throttling via `@nest-lab/throttler-storage-redis`
+
+---
+
+## API Overview
+
+Base URL: `http://localhost:3000/api/v1`
+
+All responses follow a consistent envelope:
+
+```json
+{
+  "success": true,
+  "data": { ... }
+}
+```
+
+**Modules:**
+
+| Module          | Base path                  | Description                                       |
+|-----------------|----------------------------|---------------------------------------------------|
+| Auth            | `/api/v1/auth`             | Register, login, OTP verify, token refresh, logout |
+| Doctors         | `/api/v1/doctors`          | Search, profiles, specialties, geospatial queries |
+| Appointments    | `/api/v1/appointments`     | Book, cancel, reschedule, confirm, review         |
+| Scheduling      | `/api/v1/scheduling`       | Weekly templates, schedule exceptions, slot locks |
+| Notifications   | `/api/v1/notifications`    | Preferences, SMS opt-out webhook                  |
+| Video           | `/api/v1/consultations`    | Jitsi token generation, video session records     |
+| Analytics       | `/api/v1/analytics`        | Read-only reporting (admin only)                  |
+| Health          | `/health`                  | Liveness probe (no auth)                          |
+
+**Example — register a patient:**
+
+```bash
+curl -X POST http://localhost:3000/api/v1/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{
+    "phone": "+261340000000",
+    "password": "s3cret",
+    "first_name": "Hery",
+    "last_name": "Rakoto"
+  }'
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "message": "OTP sent to +261340000000"
+  }
+}
+```
+
+**Auth flow:**
+1. `POST /auth/register` — creates account, sends OTP via SMS
+2. `POST /auth/verify-otp` — verifies OTP, returns access token in body + refresh token as `HttpOnly` cookie
+3. `POST /auth/refresh` — exchanges refresh cookie for new access token
+4. Include `Authorization: Bearer <access_token>` on all authenticated requests
+
+> Access tokens are stored in Zustand memory only — never `localStorage`. Refresh tokens are `HttpOnly` cookies only — never in the response body.
+
+---
+
+## Testing
+
+```bash
+# Unit tests (no DB or Redis — all deps mocked)
+pnpm test
+
+# Unit tests with coverage report (coverage/unit/)
+pnpm --filter @e-tady-dokotera/api test:coverage
+
+# Integration tests (requires docker-compose.test.yml stack)
+docker compose -f docker-compose.test.yml up -d
+pnpm test:integration
+docker compose -f docker-compose.test.yml down
 ```
 
 ---
 
-### First-time setup checklist
+## Development Workflow
 
-1. Copy the environment file and fill in any values you need:
-   ```bash
-   cp .env.example .env
-   ```
-2. Run the stack:
-   ```bash
-   docker compose up
-   ```
-3. Verify the API is healthy:
-   ```bash
-   curl http://localhost:3000/health
-   # Expected: {"success":true,"data":{"status":"ok","uptime":...}}
-   ```
+**Branch naming:**
+- `feat/<description>` — new features
+- `fix/<description>` — bug fixes
+- `chore/<description>` — maintenance, deps, config
+- `docs/<description>` — documentation only
 
-The database schemas and extensions are created automatically on first run. No manual migration step is needed to get the local environment started.
+**Commit style:** [Conventional Commits](https://www.conventionalcommits.org/)
+
+```
+feat(appointments): add two-layer slot locking with Redis TTL
+fix(auth): handle expired OTP when clock skew exceeds 30s
+chore(deps): upgrade prisma to 7.4.2
+```
+
+**Adding a new NestJS module:**
+
+```bash
+cd apps/api
+
+# Scaffold the module skeleton
+nest generate module modules/<name>
+nest generate service modules/<name>/application/<name>
+nest generate controller modules/<name>/api/<name>
+
+# Then create domain/, infrastructure/ folders manually
+# and move generated files into the correct layer
+```
+
+**Code conventions (enforced by review):**
+- No Prisma calls in services or controllers — always through a Repository class
+- No `$queryRaw` outside a Repository class
+- No `$queryRawUnsafe` anywhere
+- Cross-module calls only through public service interfaces — no direct cross-module DB writes
+- Side effects via domain events (e.g. `AppointmentBooked` → SMS)
+
+---
+
+## Deployment
+
+**Production stack:**
+
+```bash
+docker compose -f docker-compose.prod.yml up -d
+```
+
+**CI/CD:** GitHub Actions (`.github/workflows/`) runs lint, unit tests, and integration tests on every push.
+
+**Infrastructure:** DigitalOcean (Droplet + Managed PostgreSQL + Spaces) provisioned via Terraform in `infra/terraform/`. Nginx proxies the API with WebSocket upgrade headers for Socket.io.
+
+**Production checklist before deploy:**
+- Set `NODE_ENV=production`
+- Rotate `JWT_SECRET` and `BULL_BOARD_PASSWORD`
+- Set `ADMIN_ALLOWED_IPS` to restrict `/admin/queues`
+- Verify Redis uses `--maxmemory-policy noeviction`
+- Ensure `__Host-refresh_token` cookie is used (enforced by `NODE_ENV=production` in the API)
+
+---
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feat/your-feature`
+3. Follow the commit style above (Conventional Commits)
+4. Make sure unit tests pass: `pnpm test`
+5. Open a pull request against `main`
+
+See [`docs/decisions.md`](docs/decisions.md) for architecture decision records and [`docs/roadmap.md`](docs/roadmap.md) for the implementation plan before starting significant work.

@@ -58,7 +58,7 @@ The rule is simple:
 Create the repository structure immediately. Every file you write for the next 12 weeks lives here.
 
 ```bash
-mkdir madagascar-health && cd madagascar-health
+mkdir e-tady-dokotera && cd e-tady-dokotera
 git init
 npm install -g pnpm
 pnpm init
@@ -102,7 +102,7 @@ packages:
 
 ```json
 {
-  "name": "madagascar-health",
+  "name": "e-tady-dokotera",
   "private": true,
   "scripts": {
     "dev": "turbo dev",
@@ -275,7 +275,7 @@ ADMIN_ALLOWED_IPS=  # comma-separated IPs allowed to reach /admin/queues in prod
 SMS_PROVIDER=mock
 
 # Storage
-STORAGE_BUCKET=madagascar-health-dev
+STORAGE_BUCKET=e-tady-dokotera-dev
 STORAGE_REGION=us-east-1
 STORAGE_ENDPOINT=
 STORAGE_ACCESS_KEY=
@@ -2485,12 +2485,12 @@ jobs:
       # "PrismaClient did not initialize yet. Please run prisma generate." — all
       # repository-touching tests fail before they even run.
       - name: Generate Prisma client
-        run: pnpm --filter @madagascar-health/api exec prisma generate
+        run: pnpm --filter @e-tady-dokotera/api exec prisma generate
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/test
 
       - name: Run database migrations
-        run: pnpm --filter @madagascar-health/api exec prisma migrate deploy
+        run: pnpm --filter @e-tady-dokotera/api exec prisma migrate deploy
         env:
           DATABASE_URL: postgresql://test:test@localhost:5432/test
 
@@ -2598,7 +2598,7 @@ jobs:
           username: deploy
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
-            cd /opt/madagascar-health
+            cd /opt/e-tady-dokotera
             docker compose -f docker-compose.prod.yml pull api
             # Run migrations BEFORE swapping the container
             docker compose -f docker-compose.prod.yml run --rm api \
@@ -2608,7 +2608,7 @@ jobs:
 
 # Required GitHub Secrets (set in repo Settings → Secrets):
 # DO_API_TOKEN      — DigitalOcean Personal Access Token
-# DO_REGISTRY_NAME  — Container Registry name (e.g. "madagascar-health")
+# DO_REGISTRY_NAME  — Container Registry name (e.g. "e-tady-dokotera")
 # DROPLET_IP        — Production Droplet IP address
 # DEPLOY_SSH_KEY    — Private SSH key for the deploy user on the Droplet
 
@@ -2621,7 +2621,7 @@ jobs:
 Create resources in this exact order:
 
 ```
-1. DigitalOcean project: "madagascar-health-production"
+1. DigitalOcean project: "e-tady-dokotera-production"
 2. Managed PostgreSQL cluster
    - Plan: Basic, 2 GB RAM, 1 vCPU, `db-s-1vcpu-2gb` (~$30/month)
    - Region: Frankfurt (fra1) — closest DO region to Madagascar
@@ -2633,7 +2633,7 @@ Create resources in this exact order:
    - Same region as database
    - SSH key: your deploy key
 4. Spaces bucket (object storage)
-   - Name: madagascar-health-prod
+   - Name: e-tady-dokotera-prod
    - Access: Private
    - CDN: Enabled
 5. Container Registry
@@ -2671,7 +2671,7 @@ terraform {
   backend "s3" {
     endpoint = "fra1.digitaloceanspaces.com"
     region   = "us-east-1"  # DO Spaces requires this value literally
-    bucket   = "madagascar-health-tfstate"
+    bucket   = "e-tady-dokotera-tfstate"
     key      = "prod/terraform.tfstate"
     skip_credentials_validation = true
     skip_metadata_api_check     = true
@@ -2691,16 +2691,16 @@ variable "ssh_fingerprint" {}
 provider "digitalocean" { token = var.do_token }
 
 resource "digitalocean_droplet" "app" {
-  name     = "madagascar-health-app"
+  name     = "e-tady-dokotera-app"
   region   = "fra1"
   size     = "s-4vcpu-8gb"
   image    = "ubuntu-22-04-x64"
   ssh_keys = [var.ssh_fingerprint]
-  tags     = ["madagascar-health", "production"]
+  tags     = ["e-tady-dokotera", "production"]
 }
 
 resource "digitalocean_database_cluster" "postgres" {
-  name       = "madagascar-health-db"
+  name       = "e-tady-dokotera-db"
   engine     = "pg"
   version    = "16"
   # infra-review fix (MEDIUM-4): db-s-1vcpu-1gb (~$15/month, 1 GB RAM) is undersized
@@ -2716,13 +2716,13 @@ resource "digitalocean_database_cluster" "postgres" {
 }
 
 resource "digitalocean_spaces_bucket" "storage" {
-  name   = "madagascar-health-prod"
+  name   = "e-tady-dokotera-prod"
   region = "fra1"
   acl    = "private"
 }
 
 resource "digitalocean_container_registry" "registry" {
-  name                   = "madagascar-health"
+  name                   = "e-tady-dokotera"
   subscription_tier_slug = "starter"
 }
 
@@ -2731,7 +2731,7 @@ resource "digitalocean_container_registry" "registry" {
 # and is the only entry point. Without this, port 3000 is reachable directly from the
 # internet, bypassing Nginx, Cloudflare WAF, and HTTPS termination.
 resource "digitalocean_firewall" "app" {
-  name        = "madagascar-health-fw"
+  name        = "e-tady-dokotera-fw"
   droplet_ids = [digitalocean_droplet.app.id]
 
   inbound_rule {
@@ -2767,7 +2767,7 @@ Store `do_token` and `ssh_fingerprint` in `terraform.tfvars` — **git-ignored**
 
 **Droplet setup** (SSH in as root and run once):
 
-> ⚠️ **v1.3 fix — deploy user creation:** The CI workflow connects as the `deploy` user (`username: deploy`) and Step 28 runs `chown deploy:deploy /opt/madagascar-health`. Neither creates the `deploy` user. Without this user, `ssh deploy@<ip>` fails with `Permission denied`. Create and configure the user before any CI run.
+> ⚠️ **v1.3 fix — deploy user creation:** The CI workflow connects as the `deploy` user (`username: deploy`) and Step 28 runs `chown deploy:deploy /opt/e-tady-dokotera`. Neither creates the `deploy` user. Without this user, `ssh deploy@<ip>` fails with `Permission denied`. Create and configure the user before any CI run.
 > 
 
 ```bash
@@ -2796,15 +2796,15 @@ ufw --force enable
 apt install -y nginx certbot python3-certbot-nginx
 
 # Create app directory
-mkdir -p /opt/madagascar-health
-chown deploy:deploy /opt/madagascar-health
+mkdir -p /opt/e-tady-dokotera
+chown deploy:deploy /opt/e-tady-dokotera
 
 # Switch to deploy user and test docker access
 su - deploy -c "docker info"
 
 # Copy docker-compose.prod.yml and .env.production (never via git — use scp)
 # Then:
-docker compose -f /opt/madagascar-health/docker-compose.prod.yml up -d
+docker compose -f /opt/e-tady-dokotera/docker-compose.prod.yml up -d
 ```
 
 > ⚠️ **v1.2 fix — Nginx WebSocket headers missing:** Without `Upgrade` and `Connection` headers, Nginx drops WebSocket upgrade requests. Socket.io silently falls back to long-polling or fails entirely. These headers are mandatory for the real-time slot availability feature.
@@ -2872,12 +2872,12 @@ server {
 certbot --nginx -d api.yourdomain.com   # free Let's Encrypt SSL
 ```
 
-**`docker-compose.prod.yml`** (copy to `/opt/madagascar-health/` on the Droplet via SCP — never via git):
+**`docker-compose.prod.yml`** (copy to `/opt/e-tady-dokotera/` on the Droplet via SCP — never via git):
 
 ```yaml
 services:
   api:
-    image: registry.digitalocean.com/madagascar-health/api:latest
+    image: registry.digitalocean.com/e-tady-dokotera/api:latest
     restart: unless-stopped
     # HIGH-01 fix: bind to loopback only — prevents direct public access bypassing Nginx/Cloudflare WAF.
     # "3000:3000" would expose the raw HTTP server on 0.0.0.0 (all interfaces), including the public IP.
@@ -3389,7 +3389,7 @@ Before starting React Native, extract the API client from the web app into a sha
 ```bash
 # packages/api-client/
 # → Move all files from apps/web/src/api/ here
-# → Update imports in apps/web to use @madagascar-health/api-client
+# → Update imports in apps/web to use @e-tady-dokotera/api-client
 # → apps/mobile will import the same package
 ```
 

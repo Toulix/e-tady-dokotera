@@ -677,7 +677,7 @@ const reminderTime = appointmentTime.minus({ hours: 24 });
     withoutIt:
       'Infrastructure would be configured manually via the dashboard. No one would remember exactly what was set up. Disaster recovery would involve guessing.',
     codeExample: `resource "digitalocean_droplet" "api" {
-  name   = "madagascar-health-api"
+  name   = "e-tady-dokotera-api"
   region = "ams3"
   size   = "s-2vcpu-4gb"
   image  = "docker-20-04"
