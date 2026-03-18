@@ -14,7 +14,6 @@ import { OtpService } from '../infrastructure/otp.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
-
 export interface JwtPayload {
   sub: string;
   userType: string;
