@@ -22,13 +22,14 @@ export class AuthRepository {
   constructor(private readonly prisma: PrismaService) {}
 
   async createUser(data: CreateUserData): Promise<UserModel> {
+    const { phoneNumber, passwordHash, firstName, lastName, userType } = data;
     return this.prisma.user.create({
       data: {
-        phoneNumber: data.phoneNumber,
-        passwordHash: data.passwordHash,
-        firstName: data.firstName,
-        lastName: data.lastName,
-        userType: data.userType,
+        phoneNumber,
+        passwordHash,
+        firstName,
+        lastName,
+        userType,
       },
     });
   }
