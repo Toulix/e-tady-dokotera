@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Response, Request } from 'express';
-import { AuthService, JwtPayload } from '../application/auth.service';
+import { AuthService, type JwtPayload } from '../application/auth.service';
 import { RegisterDto } from '../application/dto/register.dto';
 import { LoginDto } from '../application/dto/login.dto';
 import { VerifyOtpDto } from '../application/dto/verify-otp.dto';
@@ -38,9 +38,9 @@ export class AuthController {
     @Body() dto: VerifyOtpDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { accessToken, refreshToken } = await this.authService.verifyOtp(dto);
+    const { accessToken, refreshToken, user } = await this.authService.verifyOtp(dto);
     this.setRefreshCookie(res, refreshToken);
-    return { access_token: accessToken };
+    return { access_token: accessToken, user };
   }
 
 
@@ -50,9 +50,9 @@ export class AuthController {
     @Body() dto: LoginDto,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const { accessToken, refreshToken } = await this.authService.login(dto);
+    const { accessToken, refreshToken, user } = await this.authService.login(dto);
     this.setRefreshCookie(res, refreshToken);
-    return { access_token: accessToken };
+    return { access_token: accessToken, user };
   }
 
   /**

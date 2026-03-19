@@ -25,6 +25,13 @@ interface TokenPair {
   refreshToken: string;
 }
 
+/** Returned to the controller for verify-otp and login responses */
+export interface AuthResult {
+  accessToken: string;
+  refreshToken: string;
+  user: { id: string; firstName: string; lastName: string; userType: string };
+}
+
 const REFRESH_TOKEN_TTL = 7 * 24 * 3600; // 7 days in seconds
 const BCRYPT_ROUNDS = 10;
 
@@ -56,7 +63,7 @@ export class AuthService {
     await this.otpService.generate(user.phoneNumber);
   }
 
-  async verifyOtp(dto: VerifyOtpDto): Promise<TokenPair> {
+  async verifyOtp(dto: VerifyOtpDto): Promise<AuthResult> {
     const user = await this.authRepository.findByPhone(dto.phone_number);
     if (!user) {
       throw new BadRequestException('Invalid phone number');
@@ -72,10 +79,14 @@ export class AuthService {
     }
     await this.authRepository.updateLastLogin(user.id);
 
-    return this.issueTokenPair(user.id, user.userType);
+    const tokens = await this.issueTokenPair(user.id, user.userType);
+    return {
+      ...tokens,
+      user: { id: user.id, firstName: user.firstName, lastName: user.lastName, userType: user.userType },
+    };
   }
 
-  async login(dto: LoginDto): Promise<TokenPair> {
+  async login(dto: LoginDto): Promise<AuthResult> {
     const user = await this.authRepository.findByPhone(dto.phone_number);
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
@@ -96,7 +107,11 @@ export class AuthService {
 
     await this.authRepository.updateLastLogin(user.id);
 
-    return this.issueTokenPair(user.id, user.userType);
+    const tokens = await this.issueTokenPair(user.id, user.userType);
+    return {
+      ...tokens,
+      user: { id: user.id, firstName: user.firstName, lastName: user.lastName, userType: user.userType },
+    };
   }
 
   /**
