@@ -1,1 +1,47 @@
 @import "tailwindcss";
+
+@theme {
+  /* Login / Auth page color palette */
+  --color-primary: #005387;
+  --color-primary-container: #1b6ca8;
+  --color-on-primary: #ffffff;
+  --color-on-primary-container: #d9e9ff;
+  --color-on-primary-fixed-variant: #004a78;
+  --color-surface: #f8f9ff;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-highest: #e1e2e8;
+  --color-on-surface: #191c20;
+  --color-on-surface-variant: #414750;
+  --color-outline: #717881;
+  --color-outline-variant: #c0c7d1;
+  --color-secondary-container: #bee1fe;
+  --color-error-container: #ffdad6;
+  --color-on-error-container: #93000a;
+
+  /* Typography */
+  --font-headline: "Plus Jakarta Sans", sans-serif;
+  --font-body: "Manrope", sans-serif;
+  --font-label: "Manrope", sans-serif;
+}
+
+.material-symbols-outlined {
+  font-family: 'Material Symbols Outlined';
+  font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  vertical-align: middle;
+}
+
+/* Shared auth-form input style */
+.field-input {
+  width: 100%;
+  border: none;
+  outline: none;
+  border-radius: 0.75rem;
+  padding: 1rem 1.25rem;
+  font-size: 0.875rem;
+  background-color: var(--color-surface-container-highest);
+  color: var(--color-on-surface);
+  transition: box-shadow 0.15s ease;
+}
+.field-input:focus {
+  box-shadow: 0 0 0 2px rgba(27, 108, 168, 0.35);
+}

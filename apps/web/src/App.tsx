@@ -17,8 +17,11 @@ export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Standalone route — wiki has its own layout */}
+        {/* Standalone routes — no Navbar, own layout */}
         <Route path="/wiki" element={<TechStackWikiPage />} />
+        <Route path="/auth/login" element={<LoginPage />} />
+        <Route path="/auth/register" element={<RegisterPage />} />
+        <Route path="/auth/verify-otp" element={<VerifyOtpPage />} />
 
         <Route element={<AppShell />}>
           <Route path="/" element={<HomePage />} />
@@ -29,9 +32,6 @@ export default function App() {
           <Route path="/patient/dashboard" element={<PatientDashboard />} />
           <Route path="/doctor/dashboard" element={<DoctorDashboard />} />
           <Route path="/doctor/schedule" element={<SchedulePage />} />
-          <Route path="/auth/login" element={<LoginPage />} />
-          <Route path="/auth/register" element={<RegisterPage />} />
-          <Route path="/auth/verify-otp" element={<VerifyOtpPage />} />
         </Route>
       </Routes>
     </BrowserRouter>
