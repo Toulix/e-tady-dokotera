@@ -28,6 +28,25 @@ export interface SearchParams {
 }
 
 /**
+ * Typed container for all WHERE clause SQL fragments.
+ *
+ * BUG FIX: Previously this was Record<string, Sql>, which meant a typo
+ * like `whereClauses.specilty` would compile fine but silently drop
+ * the filter from the query. With an explicit interface, TypeScript
+ * catches typos at compile time.
+ */
+interface WhereClauses {
+  specialty: Sql;
+  name: Sql;
+  geo: Sql;
+  region: Sql;
+  city: Sql;
+  language: Sql;
+  rating: Sql;
+  consultationType: Sql;
+}
+
+/**
  * Handles all raw SQL queries for doctor search.
  *
  * This is a separate repository from DoctorRepository (Single Responsibility Principle):
@@ -96,9 +115,14 @@ export class DoctorSearchRepository {
     const needsFacilityJoin =
       this.hasGeoFilter(lat, lng, radiusKm) || !!region || !!city;
 
+    // INNER JOIN (not LEFT JOIN) because when this branch runs, we're filtering
+    // by geo/region/city — all of which require a facility to exist. A LEFT JOIN
+    // would include doctors with no facility, but the WHERE clause would then
+    // filter them out anyway (f.region = X fails on NULL). INNER JOIN is both
+    // semantically correct and lets the query planner optimize better.
     const facilityJoin = needsFacilityJoin
-      ? sql`LEFT JOIN doctors.doctor_facilities df ON df.doctor_id = p.user_id
-            LEFT JOIN doctors.facilities f ON f.id = df.facility_id`
+      ? sql`INNER JOIN doctors.doctor_facilities df ON df.doctor_id = p.user_id
+            INNER JOIN doctors.facilities f ON f.id = df.facility_id`
       : empty;
 
     // ── Build SELECT columns ──────────────────────────────────────────
@@ -257,7 +281,7 @@ export class DoctorSearchRepository {
     radiusKm?: number;
     region?: string;
     city?: string;
-  }): Record<string, Sql> {
+  }): WhereClauses {
     const {
       specialty,
       q,
@@ -403,10 +427,16 @@ export class DoctorSearchRepository {
    *
    * PostgreSQL returns COUNT as bigint, which JavaScript represents as BigInt.
    * We convert to Number since doctor counts will never exceed Number.MAX_SAFE_INTEGER.
+   *
+   * TODO: This query re-evaluates all WHERE clauses (including expensive
+   * pg_trgm similarity() and PostGIS ST_DWithin() computations) a second time.
+   * At MVP scale this is fine, but as the doctor table grows, consider:
+   *   1. Using COUNT(*) OVER() as a window function in the main query, or
+   *   2. Caching counts in Redis with a short TTL (30-60s) keyed by filter combo.
    */
   private async countResults(
     facilityJoin: Sql,
-    whereClauses: Record<string, Sql>,
+    whereClauses: WhereClauses,
   ): Promise<number> {
     const countResult = await this.prisma.$queryRaw<[{ count: bigint }]>(sql`
       SELECT COUNT(DISTINCT p.user_id) AS count

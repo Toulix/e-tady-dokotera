@@ -114,11 +114,17 @@ export class SearchDoctorsQueryDto {
   @IsIn(['in_person', 'video', 'home_visit'])
   consultation_type?: string;
 
-  /** Page number for pagination (1-based). Defaults to 1. */
+  /**
+   * Page number for pagination (1-based). Defaults to 1.
+   * Capped at 100 to prevent abuse — offset-based pagination gets slower
+   * on deep pages because PostgreSQL has to scan and skip all prior rows.
+   * For example, page 100 with limit 20 = PostgreSQL reads 2000 rows to return 20.
+   */
   @IsOptional()
   @Type(() => Number)
   @IsInt()
   @Min(1)
+  @Max(100)
   page?: number;
 
   /** Number of results per page. Defaults to 20, max 50. */

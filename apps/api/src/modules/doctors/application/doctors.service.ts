@@ -7,6 +7,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   DoctorRepository,
   type DoctorProfileWithUser,
+  type PublicDoctorProfile,
   type UpdateProfileData,
 } from '../infrastructure/doctor.repository';
 import { DoctorSearchRepository } from '../infrastructure/doctor-search.repository';
@@ -36,7 +37,7 @@ export class DoctorsService {
    * Returns 404 for both non-existent and unverified profiles to avoid
    * leaking whether an unverified profile exists (information disclosure).
    */
-  async getPublicProfile(doctorId: string): Promise<DoctorProfileWithUser> {
+  async getPublicProfile(doctorId: string): Promise<PublicDoctorProfile> {
     const profile = await this.doctorRepository.findPublicProfile(doctorId);
 
     if (!profile) {

@@ -32,8 +32,42 @@ export interface UpdateProfileData {
   homeVisitEnabled?: boolean;
 }
 
-/** Shape returned for public doctor profiles (profile + user name/photo). */
+/** Shape returned for internal use — includes ALL profile fields. */
 export interface DoctorProfileWithUser extends DoctorProfileModel {
+  user: {
+    firstName: string;
+    lastName: string;
+    profilePhotoUrl: string | null;
+  };
+}
+
+/**
+ * Shape returned for the public-facing GET /doctors/:id endpoint.
+ *
+ * This is a whitelist of safe fields — internal fields like totalAppointments,
+ * isProfileLive, and registrationNumber are intentionally excluded so they
+ * never leak to unauthenticated users.
+ *
+ * If you add a new column to the DoctorProfile table and want it visible
+ * on the public profile, add it here AND in the PUBLIC_PROFILE_SELECT below.
+ */
+export interface PublicDoctorProfile {
+  userId: string;
+  specialties: string[];
+  subSpecialties: string[];
+  yearsOfExperience: number;
+  about: string | null;
+  languagesSpoken: string[];
+  consultationFeeMga: number;
+  consultationDurationMinutes: number;
+  acceptsNewPatients: boolean;
+  education: unknown;
+  certifications: unknown;
+  insuranceAccepted: string[];
+  videoConsultationEnabled: boolean;
+  homeVisitEnabled: boolean;
+  averageRating: number;
+  totalReviews: number;
   user: {
     firstName: string;
     lastName: string;
@@ -54,6 +88,35 @@ const USER_PUBLIC_SELECT = {
   },
 } as const;
 
+/**
+ * Prisma `select` clause that whitelists only safe fields for public display.
+ *
+ * BUG FIX: Previously used `include` which returned ALL columns (including
+ * internal fields like registrationNumber, totalAppointments, isProfileLive).
+ * Switched to explicit `select` so only intended fields reach the API response.
+ *
+ * Rule of thumb: `include` = all columns + relations, `select` = only what you list.
+ */
+const PUBLIC_PROFILE_SELECT = {
+  userId: true,
+  specialties: true,
+  subSpecialties: true,
+  yearsOfExperience: true,
+  about: true,
+  languagesSpoken: true,
+  consultationFeeMga: true,
+  consultationDurationMinutes: true,
+  acceptsNewPatients: true,
+  education: true,
+  certifications: true,
+  insuranceAccepted: true,
+  videoConsultationEnabled: true,
+  homeVisitEnabled: true,
+  averageRating: true,
+  totalReviews: true,
+  user: USER_PUBLIC_SELECT,
+} as const;
+
 @Injectable()
 export class DoctorRepository {
   constructor(private readonly prisma: PrismaService) {}
@@ -72,15 +135,17 @@ export class DoctorRepository {
   /**
    * Finds a verified doctor profile for public display.
    * Only returns profiles where isProfileLive = true — unverified doctors
-   * must not be visible to unauthenticated users. Using `select` instead of
-   * returning the full model to avoid leaking internal fields
-   * (e.g. totalAppointments, isProfileLive flag itself) to the public API.
+   * must not be visible to unauthenticated users.
+   *
+   * Uses `select` (not `include`) to return ONLY the whitelisted fields.
+   * This prevents internal fields (registrationNumber, totalAppointments,
+   * isProfileLive) from ever reaching the public API response.
    */
-  async findPublicProfile(userId: string): Promise<DoctorProfileWithUser | null> {
+  async findPublicProfile(userId: string): Promise<PublicDoctorProfile | null> {
     return this.prisma.doctorProfile.findUnique({
       where: { userId, isProfileLive: true },
-      include: { user: USER_PUBLIC_SELECT },
-    }) as Promise<DoctorProfileWithUser | null>;
+      select: PUBLIC_PROFILE_SELECT,
+    }) as Promise<PublicDoctorProfile | null>;
   }
 
   /**
