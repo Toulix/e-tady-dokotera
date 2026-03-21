@@ -19,7 +19,9 @@ datasource db {
   // The postgis/postgis Docker image always auto-creates all 4 extensions regardless
   // of env vars. infra/docker/drop-unused-extensions.sql (mounted as initdb script 20-)
   // drops all 4 after image init so Prisma can own postgis via migration history.
-  extensions = [postgis]
+  // postgis: enables geographic queries (ST_DWithin, ST_MakePoint) for location-based doctor search
+  // pg_trgm: enables fuzzy text matching (similarity function) for searching doctors by name
+  extensions = [postgis, pg_trgm(schema: "public")]
 }
 
 // ─── Enums ──────────────────────────────────────────────────────────

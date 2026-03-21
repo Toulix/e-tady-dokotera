@@ -5,6 +5,7 @@ import {
   Post,
   Param,
   Body,
+  Query,
   UseGuards,
   HttpCode,
   HttpStatus,
@@ -16,11 +17,25 @@ import { Roles } from '@/shared/decorators/roles.decorator';
 import { CurrentUser } from '@/shared/decorators/current-user.decorator';
 import type { JwtPayload } from '@/modules/auth/application/auth.service';
 import { DoctorsService } from '../application/doctors.service';
-import { UpdateDoctorProfileDto } from '../application/dto';
+import { UpdateDoctorProfileDto, SearchDoctorsQueryDto } from '../application/dto';
 
 @Controller('doctors')
 export class DoctorsController {
   constructor(private readonly doctorsService: DoctorsService) {}
+
+  /**
+   * Public endpoint — search for doctors by name, specialty, location, language, etc.
+   *
+   * IMPORTANT: This route MUST be declared BEFORE @Get(':id') below.
+   * NestJS evaluates routes top-down, and if ':id' came first, a request to
+   * /doctors/search would match ':id' with id="search", then ParseUUIDPipe
+   * would reject it with a confusing 400 error ("search" is not a valid UUID).
+   */
+  @Get('search')
+  async searchDoctors(@Query() query: SearchDoctorsQueryDto) {
+    const result = await this.doctorsService.searchDoctors(query);
+    return { success: true, data: result };
+  }
 
   /**
    * Public endpoint — anyone can view a verified doctor's profile.

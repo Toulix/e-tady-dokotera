@@ -9,8 +9,11 @@ import {
   type DoctorProfileWithUser,
   type UpdateProfileData,
 } from '../infrastructure/doctor.repository';
+import { DoctorSearchRepository } from '../infrastructure/doctor-search.repository';
 import type { InputJsonValue } from '../../../generated/prisma/internal/prismaNamespace';
 import { UpdateDoctorProfileDto } from './dto/update-doctor-profile.dto';
+import { SearchDoctorsQueryDto } from './dto/search-doctors-query.dto';
+import type { PaginatedSearchResult } from '../domain/search-result.interface';
 import {
   DoctorProfileUpdatedEvent,
   DoctorVerifiedEvent,
@@ -22,6 +25,7 @@ export class DoctorsService {
 
   constructor(
     private readonly doctorRepository: DoctorRepository,
+    private readonly doctorSearchRepository: DoctorSearchRepository,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
@@ -40,6 +44,45 @@ export class DoctorsService {
     }
 
     return profile;
+  }
+
+  /**
+   * Searches for doctors using optional filters (name, specialty, location, etc.).
+   *
+   * This is the main discovery endpoint for patients. It delegates the raw SQL query
+   * to DoctorSearchRepository and adds pagination metadata (total_pages) on top.
+   *
+   * All filters are optional — calling with no params returns all live doctors sorted by rating.
+   */
+  async searchDoctors(dto: SearchDoctorsQueryDto): Promise<PaginatedSearchResult> {
+    const page = dto.page ?? 1;
+    const limit = dto.limit ?? 20;
+
+    const { rows, total } = await this.doctorSearchRepository.search({
+      q: dto.q,
+      specialty: dto.specialty,
+      region: dto.region,
+      city: dto.city,
+      lat: dto.lat,
+      lng: dto.lng,
+      radiusKm: dto.radius_km,
+      language: dto.language,
+      minRating: dto.min_rating,
+      consultationType: dto.consultation_type,
+      page,
+      limit,
+    });
+
+    return {
+      doctors: rows,
+      total,
+      page,
+      limit,
+      // Math.ceil ensures we round up — 21 results with limit 20 = 2 pages, not 1.
+      // Math.max(1, ...) ensures at least 1 page even when total is 0,
+      // so the frontend doesn't show "page 1 of 0".
+      total_pages: Math.max(1, Math.ceil(total / limit)),
+    };
   }
 
   /**

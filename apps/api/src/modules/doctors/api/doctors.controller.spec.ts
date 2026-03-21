@@ -36,6 +36,7 @@ function mockProfile(overrides: Record<string, unknown> = {}) {
 
 const mockDoctorsService = {
   getPublicProfile: jest.fn(),
+  searchDoctors: jest.fn(),
   updateOwnProfile: jest.fn(),
   verifyDoctor: jest.fn(),
 };
@@ -54,6 +55,60 @@ describe('DoctorsController', () => {
     }).compile();
 
     controller = module.get<DoctorsController>(DoctorsController);
+  });
+
+  // ───────────────────── GET /doctors/search ────────────────────────────
+  describe('searchDoctors', () => {
+    const mockSearchResult = {
+      doctors: [
+        {
+          user_id: 'doctor-uuid-1',
+          first_name: 'Tahiry',
+          last_name: 'Rakoto',
+          specialties: ['Cardiologie'],
+          average_rating: 450,
+        },
+      ],
+      total: 1,
+      page: 1,
+      limit: 20,
+      total_pages: 1,
+    };
+
+    it('should return search results wrapped in success envelope', async () => {
+      mockDoctorsService.searchDoctors.mockResolvedValue(mockSearchResult);
+
+      const result = await controller.searchDoctors({});
+
+      expect(result).toEqual({ success: true, data: mockSearchResult });
+      expect(mockDoctorsService.searchDoctors).toHaveBeenCalledWith({});
+    });
+
+    it('should pass query params to service', async () => {
+      mockDoctorsService.searchDoctors.mockResolvedValue(mockSearchResult);
+
+      const query = { q: 'Rakoto', specialty: 'Cardiologie', page: 2 };
+      await controller.searchDoctors(query);
+
+      expect(mockDoctorsService.searchDoctors).toHaveBeenCalledWith(query);
+    });
+
+    it('should return empty results when no doctors match', async () => {
+      const emptyResult = {
+        doctors: [],
+        total: 0,
+        page: 1,
+        limit: 20,
+        total_pages: 1,
+      };
+      mockDoctorsService.searchDoctors.mockResolvedValue(emptyResult);
+
+      const result = await controller.searchDoctors({
+        specialty: 'NonexistentSpecialty',
+      });
+
+      expect(result).toEqual({ success: true, data: emptyResult });
+    });
   });
 
   // ───────────────────── GET /doctors/:id ─────────────────────────────

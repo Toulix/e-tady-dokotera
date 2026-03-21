@@ -3,6 +3,7 @@ import { NotFoundException } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { DoctorsService } from './doctors.service';
 import { DoctorRepository } from '../infrastructure/doctor.repository';
+import { DoctorSearchRepository } from '../infrastructure/doctor-search.repository';
 import {
   DoctorProfileUpdatedEvent,
   DoctorVerifiedEvent,
@@ -48,6 +49,10 @@ const mockDoctorRepository = {
   verifyDoctor: jest.fn(),
 };
 
+const mockDoctorSearchRepository = {
+  search: jest.fn(),
+};
+
 const mockEventEmitter = {
   emit: jest.fn(),
 };
@@ -62,6 +67,7 @@ describe('DoctorsService', () => {
       providers: [
         DoctorsService,
         { provide: DoctorRepository, useValue: mockDoctorRepository },
+        { provide: DoctorSearchRepository, useValue: mockDoctorSearchRepository },
         { provide: EventEmitter2, useValue: mockEventEmitter },
       ],
     }).compile();
@@ -305,6 +311,130 @@ describe('DoctorsService', () => {
       await expect(
         service.verifyDoctor('doctor-uuid-1', 'admin-uuid-1'),
       ).resolves.toBeUndefined();
+    });
+  });
+
+  // ───────────────────── searchDoctors ─────────────────────────────────
+  describe('searchDoctors', () => {
+    const mockSearchRow = {
+      user_id: 'doctor-uuid-1',
+      first_name: 'Tahiry',
+      last_name: 'Rakoto',
+      profile_photo_url: null,
+      specialties: ['Cardiologie'],
+      languages_spoken: ['french'],
+      consultation_fee_mga: 100000,
+      consultation_duration_minutes: 30,
+      average_rating: 450,
+      total_reviews: 10,
+      video_consultation_enabled: false,
+      home_visit_enabled: false,
+      accepts_new_patients: true,
+      about: 'Experienced cardiologist',
+    };
+
+    it('should return paginated search results', async () => {
+      mockDoctorSearchRepository.search.mockResolvedValue({
+        rows: [mockSearchRow],
+        total: 1,
+      });
+
+      const result = await service.searchDoctors({});
+
+      expect(result).toEqual({
+        doctors: [mockSearchRow],
+        total: 1,
+        page: 1,
+        limit: 20,
+        total_pages: 1,
+      });
+    });
+
+    it('should use default page=1 and limit=20 when not provided', async () => {
+      mockDoctorSearchRepository.search.mockResolvedValue({
+        rows: [],
+        total: 0,
+      });
+
+      await service.searchDoctors({});
+
+      expect(mockDoctorSearchRepository.search).toHaveBeenCalledWith(
+        expect.objectContaining({ page: 1, limit: 20 }),
+      );
+    });
+
+    it('should use provided page and limit values', async () => {
+      mockDoctorSearchRepository.search.mockResolvedValue({
+        rows: [],
+        total: 0,
+      });
+
+      await service.searchDoctors({ page: 3, limit: 10 });
+
+      expect(mockDoctorSearchRepository.search).toHaveBeenCalledWith(
+        expect.objectContaining({ page: 3, limit: 10 }),
+      );
+    });
+
+    it('should calculate total_pages correctly', async () => {
+      mockDoctorSearchRepository.search.mockResolvedValue({
+        rows: [],
+        total: 45,
+      });
+
+      // 45 results / 20 per page = 3 pages (2 full + 1 partial, ceil rounds up)
+      const result = await service.searchDoctors({});
+
+      expect(result.total_pages).toBe(3);
+    });
+
+    it('should return at least 1 total_pages even when total is 0', async () => {
+      // This prevents the frontend from showing "page 1 of 0" which is confusing
+      mockDoctorSearchRepository.search.mockResolvedValue({
+        rows: [],
+        total: 0,
+      });
+
+      const result = await service.searchDoctors({});
+
+      expect(result.total_pages).toBe(1);
+    });
+
+    it('should map snake_case DTO fields to camelCase repository params', async () => {
+      mockDoctorSearchRepository.search.mockResolvedValue({
+        rows: [],
+        total: 0,
+      });
+
+      await service.searchDoctors({
+        q: 'Rakoto',
+        specialty: 'Cardiologie',
+        region: 'Analamanga',
+        city: 'Antananarivo',
+        lat: -18.9,
+        lng: 47.5,
+        radius_km: 10,
+        language: 'french',
+        min_rating: 300,
+        consultation_type: 'video',
+        page: 2,
+        limit: 15,
+      });
+
+      expect(mockDoctorSearchRepository.search).toHaveBeenCalledWith({
+        q: 'Rakoto',
+        specialty: 'Cardiologie',
+        region: 'Analamanga',
+        city: 'Antananarivo',
+        lat: -18.9,
+        lng: 47.5,
+        radiusKm: 10,
+        language: 'french',
+        minRating: 300,
+        consultationType: 'video',
+        page: 2,
+        limit: 15,
+      });
     });
   });
 });
