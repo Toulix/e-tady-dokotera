@@ -1,27 +1,50 @@
 @import "tailwindcss";
 
-@theme {
-  /* Login / Auth page color palette */
-  --color-primary: #005387;
-  --color-primary-container: #1b6ca8;
-  --color-on-primary: #ffffff;
-  --color-on-primary-container: #d9e9ff;
-  --color-on-primary-fixed-variant: #004a78;
-  --color-surface: #f8f9ff;
-  --color-surface-container-lowest: #ffffff;
-  --color-surface-container-highest: #e1e2e8;
-  --color-on-surface: #191c20;
-  --color-on-surface-variant: #414750;
-  --color-outline: #717881;
-  --color-outline-variant: #c0c7d1;
-  --color-secondary-container: #bee1fe;
-  --color-error-container: #ffdad6;
-  --color-on-error-container: #93000a;
+/* Unlayered so it wins over Tailwind v4 preflight (which sets
+   font-family: var(--default-font-family, ...Roboto...system fonts) on html).
+   @layer base rules can lose to preflight depending on source order. */
+html, body {
+  font-family: 'Manrope', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
 
-  /* Typography */
-  --font-headline: "Plus Jakarta Sans", sans-serif;
-  --font-body: "Manrope", sans-serif;
-  --font-label: "Manrope", sans-serif;
+@theme {
+  /* Base font — tells Tailwind v4 preflight to use Manrope on html/body */
+  --default-font-family: 'Manrope', sans-serif;
+
+  /* Color palette */
+  --color-primary:                   #005387;
+  --color-primary-container:         #1b6ca8;
+  --color-on-primary:                #ffffff;
+  --color-on-primary-container:      #d9e9ff;
+  --color-on-primary-fixed-variant:  #004a78;
+  --color-surface:                   #f8f9ff;
+  --color-surface-container-lowest:  #ffffff;
+  --color-surface-container-highest: #e1e2e8;
+  --color-on-surface:                #191c20;
+  --color-on-surface-variant:        #414750;
+  --color-outline:                   #717881;
+  --color-outline-variant:           #c0c7d1;
+  --color-secondary-container:       #bee1fe;
+  --color-error-container:           #ffdad6;
+  --color-on-error-container:        #93000a;
+}
+
+/* ─── Font utility classes ────────────────────────────────────────────────────
+   Defined outside @theme / @layer so they sit in the "unlayered" cascade group,
+   which always wins over Tailwind's own utility layer. This guarantees the fonts
+   apply correctly — Tailwind v4's CSS-var mechanism for font-family is unreliable
+   when the variable value contains quoted names with a comma-separated fallback.
+   ─────────────────────────────────────────────────────────────────────────── */
+.font-headline {
+  font-family: 'Plus Jakarta Sans', sans-serif;
+}
+.font-body {
+  font-family: 'Manrope', sans-serif;
+}
+.font-label {
+  font-family: 'Manrope', sans-serif;
 }
 
 .material-symbols-outlined {
@@ -43,5 +66,5 @@
   transition: box-shadow 0.15s ease;
 }
 .field-input:focus {
-  box-shadow: 0 0 0 2px rgba(27, 108, 168, 0.35);
+  box-shadow: 0 0 0 2px var(--color-primary-container);
 }

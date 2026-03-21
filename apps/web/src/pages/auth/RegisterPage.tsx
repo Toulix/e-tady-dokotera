@@ -20,8 +20,8 @@ function getPasswordStrength(pw: string): 0 | 1 | 2 | 3 {
 }
 
 const STRENGTH_LABEL = ['', 'Faible', 'Moyen', 'Fort'] as const;
-const STRENGTH_COLOR = ['', '#ba1a1a', '#764400', '#1b6ca8'] as const;
-const STRENGTH_BAR_COLOR = ['', '#ba1a1a', '#ffb86f', '#1b6ca8'] as const;
+const STRENGTH_COLOR = ['', 'var(--color-on-error-container)', 'var(--color-on-surface-variant)', 'var(--color-primary-container)'] as const;
+const STRENGTH_BAR_COLOR = ['', 'var(--color-on-error-container)', 'var(--color-outline)', 'var(--color-primary-container)'] as const;
 
 export default function RegisterPage() {
   const navigate = useNavigate();
@@ -155,7 +155,7 @@ export default function RegisterPage() {
                 <div
                   key={label}
                   className="flex items-center gap-2 px-4 py-2 rounded-full"
-                  style={{ backgroundColor: 'var(--color-surface-container-highest)' }}
+                  style={{ backgroundColor: 'var(--color-surface-container-highest)', border: '1px solid var(--color-outline-variant)' }}
                 >
                   <img src={iconSrc} alt="" className="w-5 h-5" />
                   <span className="text-sm font-semibold">{label}</span>
@@ -232,7 +232,7 @@ export default function RegisterPage() {
                 {/* Phone */}
                 <Field label="Numéro de téléphone malgache" htmlFor="phone">
                   <div
-                    className="flex items-center rounded-xl"
+                    className="flex items-center rounded-xl focus-within:ring-2 focus-within:ring-primary-container transition-all"
                     style={{ backgroundColor: 'var(--color-surface-container-highest)' }}
                   >
                     {/* +261 prefix is locked — users enter only the 9-digit suffix */}
