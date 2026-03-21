@@ -59,6 +59,7 @@ services:
     ports: ["5173:5173"]
     volumes:
       - ./apps/web/src:/app/src
+      - ./apps/web/index.html:/app/index.html
     command: pnpm dev
 
   prisma-studio:
