@@ -5,7 +5,7 @@ import { useAuthStore } from '../../stores/authStore';
 import { AxiosError } from 'axios';
 import medicalPlusIcon from '../../assets/medical_plus_Icon.svg';
 import securityHeartIcon from '../../assets/security_heart_icon.svg';
-import securedIcon from '../../assets/security_white_icon.svg';
+import securityCheckIcon from '../../assets/security_check_icon.svg';
 import conformIcon from '../../assets/conform_icon.svg';
 import lockIcon from '../../assets/lock_icon.svg';
 import arrowRightIcon from '../../assets/arrow_right_icon.svg';
@@ -174,7 +174,9 @@ export default function VerifyOtpPage() {
           <div className="flex flex-col space-y-10 p-6 lg:p-10">
             <div className="space-y-4">
               <div className="flex items-center gap-2 font-extrabold text-2xl tracking-tight" style={{ fontFamily: 'var(--font-headline)', color: 'var(--color-primary)' }}>
-                <img src={medicalPlusIcon} alt="" className="w-8 h-8" />
+                <div className="w-9 h-9 rounded-lg flex items-center justify-center" style={{ backgroundColor: 'var(--color-primary)' }}>
+                  <img src={medicalPlusIcon} alt="" className="w-5 h-5" />
+                </div>
                 <span>e-tady dokotera</span>
               </div>
               <span
@@ -190,7 +192,7 @@ export default function VerifyOtpPage() {
                 Vérifiez votre téléphone
               </h1>
               <p className="text-lg leading-relaxed max-w-md" style={{ color: 'var(--color-on-surface-variant)' }}>
-                Entrez le code à 6 chiffres envoyé à votre numéro de téléphone malgache. Cela nous aide à garantir que votre compte reste privé et sécurisé.
+                Entrez le code à 6 chiffres envoyé à votre numéro de téléphone. Cela nous aide à garantir que votre compte reste privé et sécurisé.
               </p>
               {phoneNumber && (
                 <p className="text-sm font-bold" style={{ color: 'var(--color-primary)' }}>
@@ -216,7 +218,7 @@ export default function VerifyOtpPage() {
                   className="p-8 rounded-full flex items-center justify-center"
                   style={{ backgroundColor: 'rgba(255,255,255,0.4)', backdropFilter: 'blur(16px)' }}
                 >
-                  <img src={securedIcon} alt="" className="w-16 h-16" />
+                  <img src={securityCheckIcon} alt="" className="w-16 h-16" />
                 </div>
                 <p className="font-bold tracking-widest uppercase text-sm" style={{ fontFamily: 'var(--font-headline)', color: 'var(--color-primary)' }}>
                   ACCÈS SÉCURISÉ
@@ -233,9 +235,9 @@ export default function VerifyOtpPage() {
             {/* Shield with heart icon */}
             <div
               className="w-20 h-20 flex items-center justify-center rounded-full"
-              style={{ backgroundColor: 'var(--color-primary-fixed)' }}
+              style={{ backgroundColor: 'var(--color-primary-container)' }}
             >
-              <img src={securityHeartIcon} alt="" className="w-10 h-10" />
+              <img src={securityHeartIcon} alt="" className="w-10 h-10" style={{ filter: 'brightness(0) invert(1)' }} />
             </div>
 
             <div className="w-full space-y-8">
@@ -264,7 +266,7 @@ export default function VerifyOtpPage() {
                       onPaste={i === 0 ? handlePaste : undefined}
                       disabled={loading}
                       aria-label={`Chiffre ${i + 1} du code`}
-                      className="w-14 h-20 lg:w-16 lg:h-24 text-center text-2xl font-bold border-none rounded-xl outline-none transition-all disabled:opacity-50 focus:ring-2 focus:ring-primary-container"
+                      className="w-14 h-16 lg:w-20 lg:h-24 text-center text-2xl lg:text-3xl font-bold border-none rounded-xl outline-none transition-all disabled:opacity-50 focus:ring-2 focus:ring-primary-container"
                       style={{
                         fontFamily: 'var(--font-headline)',
                         backgroundColor: digit ? 'var(--color-surface-container-lowest)' : 'var(--color-surface-container-highest)',
