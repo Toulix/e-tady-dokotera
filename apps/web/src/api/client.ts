@@ -13,11 +13,23 @@ apiClient.interceptors.request.use((config) => {
   return config;
 });
 
+// Auth endpoints handle their own 401s (wrong credentials, etc.) —
+// the refresh interceptor must not hijack those responses, otherwise it
+// swallows the error and triggers a full-page redirect that resets state.
+const AUTH_PATHS = ['/auth/login', '/auth/register', '/auth/verify-otp'];
+
 // Silently refresh on 401
 apiClient.interceptors.response.use(
   (res) => res,
   async (error) => {
-    if (error.response?.status === 401 && !(error.config as any)._retry) {
+    const requestUrl: string = error.config?.url ?? '';
+    const isAuthEndpoint = AUTH_PATHS.some((path) => requestUrl.includes(path));
+
+    if (
+      error.response?.status === 401 &&
+      !isAuthEndpoint &&
+      !(error.config as any)._retry
+    ) {
       (error.config as any)._retry = true;
       try {
         await refreshTokens();
