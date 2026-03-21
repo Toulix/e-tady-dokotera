@@ -1,7 +1,7 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
-  ForbiddenException,
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
@@ -9,6 +9,7 @@ import {
   type DoctorProfileWithUser,
   type UpdateProfileData,
 } from '../infrastructure/doctor.repository';
+import type { InputJsonValue } from '../../../generated/prisma/internal/prismaNamespace';
 import { UpdateDoctorProfileDto } from './dto/update-doctor-profile.dto';
 import {
   DoctorProfileUpdatedEvent,
@@ -17,13 +18,22 @@ import {
 
 @Injectable()
 export class DoctorsService {
+  private readonly logger = new Logger(DoctorsService.name);
+
   constructor(
     private readonly doctorRepository: DoctorRepository,
     private readonly eventEmitter: EventEmitter2,
   ) {}
 
+  /**
+   * Returns a doctor profile for public display.
+   * Uses findPublicProfile which filters by isProfileLive = true,
+   * so unverified doctors are not exposed to unauthenticated users.
+   * Returns 404 for both non-existent and unverified profiles to avoid
+   * leaking whether an unverified profile exists (information disclosure).
+   */
   async getPublicProfile(doctorId: string): Promise<DoctorProfileWithUser> {
-    const profile = await this.doctorRepository.findByUserId(doctorId);
+    const profile = await this.doctorRepository.findPublicProfile(doctorId);
 
     if (!profile) {
       throw new NotFoundException('Doctor profile not found');
@@ -53,23 +63,20 @@ export class DoctorsService {
       return existing;
     }
 
-    await this.doctorRepository.updateProfile(doctorId, data);
+    /**
+     * updateProfile now returns the full profile with user relation included
+     * in a single Prisma call (update + include), eliminating the previous
+     * extra round-trip that re-fetched after update. The repository also
+     * handles the P2025 race condition internally.
+     */
+    const updated = await this.doctorRepository.updateProfile(doctorId, data);
 
-    // Re-fetch with user relation included
-    const updated = await this.doctorRepository.findByUserId(doctorId);
+    this.emitEventSafely(
+      'doctor.profile.updated',
+      new DoctorProfileUpdatedEvent(doctorId, updatedFields),
+    );
 
-    try {
-      this.eventEmitter.emit(
-        'doctor.profile.updated',
-        new DoctorProfileUpdatedEvent(doctorId, updatedFields),
-      );
-    } catch (error) {
-      // Domain event listeners must not break the primary flow.
-      // Sentry will capture the error via the global exception handler.
-      console.error('DoctorProfileUpdatedEvent listener failed:', error);
-    }
-
-    return updated!;
+    return updated;
   }
 
   /**
@@ -92,13 +99,29 @@ export class DoctorsService {
 
     await this.doctorRepository.verifyDoctor(doctorId);
 
+    this.emitEventSafely(
+      'doctor.verified',
+      new DoctorVerifiedEvent(doctorId, adminId),
+    );
+  }
+
+  /**
+   * Emits a domain event inside a try/catch so that a failing listener
+   * never breaks the primary request flow.
+   *
+   * Uses NestJS Logger instead of console.error so the output is structured
+   * and routed through the application's logging pipeline. When Sentry is
+   * installed (Phase 2), replace this.logger.error with Sentry.captureException
+   * to ensure errors are tracked in the error monitoring dashboard.
+   */
+  private emitEventSafely(eventName: string, event: object): void {
     try {
-      this.eventEmitter.emit(
-        'doctor.verified',
-        new DoctorVerifiedEvent(doctorId, adminId),
-      );
+      this.eventEmitter.emit(eventName, event);
     } catch (error) {
-      console.error('DoctorVerifiedEvent listener failed:', error);
+      this.logger.error(
+        `Event listener for "${eventName}" failed — the primary operation succeeded but the side-effect did not fire.`,
+        error instanceof Error ? error.stack : String(error),
+      );
     }
   }
 
@@ -117,8 +140,11 @@ export class DoctorsService {
     if (dto.consultation_fee_mga !== undefined) data.consultationFeeMga = dto.consultation_fee_mga;
     if (dto.consultation_duration_minutes !== undefined) data.consultationDurationMinutes = dto.consultation_duration_minutes;
     if (dto.accepts_new_patients !== undefined) data.acceptsNewPatients = dto.accepts_new_patients;
-    if (dto.education !== undefined) data.education = dto.education;
-    if (dto.certifications !== undefined) data.certifications = dto.certifications;
+    // DTO uses Record<string, unknown> for class-validator's @IsObject(),
+    // but Prisma expects InputJsonValue. The cast is safe here because
+    // class-validator has already validated the shape as a plain object.
+    if (dto.education !== undefined) data.education = dto.education as InputJsonValue;
+    if (dto.certifications !== undefined) data.certifications = dto.certifications as InputJsonValue;
     if (dto.insurance_accepted !== undefined) data.insuranceAccepted = dto.insurance_accepted;
     if (dto.video_consultation_enabled !== undefined) data.videoConsultationEnabled = dto.video_consultation_enabled;
     if (dto.home_visit_enabled !== undefined) data.homeVisitEnabled = dto.home_visit_enabled;

@@ -43,6 +43,7 @@ function mockProfile(overrides: Record<string, unknown> = {}) {
 // ── Mocks ──────────────────────────────────────────────────────────────
 const mockDoctorRepository = {
   findByUserId: jest.fn(),
+  findPublicProfile: jest.fn(),
   updateProfile: jest.fn(),
   verifyDoctor: jest.fn(),
 };
@@ -70,23 +71,35 @@ describe('DoctorsService', () => {
 
   // ───────────────────── getPublicProfile ──────────────────────────────
   describe('getPublicProfile', () => {
-    it('should return a doctor profile with user info', async () => {
-      const profile = mockProfile();
-      mockDoctorRepository.findByUserId.mockResolvedValue(profile);
+    it('should return a verified doctor profile with user info', async () => {
+      // getPublicProfile now delegates to findPublicProfile, which
+      // filters by isProfileLive = true at the query level.
+      const profile = mockProfile({ isProfileLive: true });
+      mockDoctorRepository.findPublicProfile.mockResolvedValue(profile);
 
       const result = await service.getPublicProfile('doctor-uuid-1');
 
       expect(result).toEqual(profile);
-      expect(mockDoctorRepository.findByUserId).toHaveBeenCalledWith(
+      expect(mockDoctorRepository.findPublicProfile).toHaveBeenCalledWith(
         'doctor-uuid-1',
       );
     });
 
     it('should throw NotFoundException when doctor does not exist', async () => {
-      mockDoctorRepository.findByUserId.mockResolvedValue(null);
+      mockDoctorRepository.findPublicProfile.mockResolvedValue(null);
 
       await expect(
         service.getPublicProfile('nonexistent-id'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should throw NotFoundException when doctor is not verified', async () => {
+      // findPublicProfile returns null for unverified profiles because
+      // the query includes isProfileLive = true in its WHERE clause.
+      mockDoctorRepository.findPublicProfile.mockResolvedValue(null);
+
+      await expect(
+        service.getPublicProfile('unverified-doctor-id'),
       ).rejects.toThrow(NotFoundException);
     });
   });
@@ -107,9 +120,9 @@ describe('DoctorsService', () => {
         about: 'Updated bio',
       });
 
-      mockDoctorRepository.findByUserId
-        .mockResolvedValueOnce(existing)  // existence check
-        .mockResolvedValueOnce(updated);  // re-fetch after update
+      // updateProfile now returns the full profile with user relation
+      // in a single Prisma call (no re-fetch needed).
+      mockDoctorRepository.findByUserId.mockResolvedValue(existing);
       mockDoctorRepository.updateProfile.mockResolvedValue(updated);
 
       const result = await service.updateOwnProfile('doctor-uuid-1', dto);
@@ -123,15 +136,16 @@ describe('DoctorsService', () => {
           about: 'Updated bio',
         },
       );
+      // Verify we only called findByUserId once (existence check only,
+      // no second call for re-fetch).
+      expect(mockDoctorRepository.findByUserId).toHaveBeenCalledTimes(1);
     });
 
     it('should emit DoctorProfileUpdatedEvent with updated field names', async () => {
       const existing = mockProfile();
       const updated = mockProfile({ consultationFeeMga: 200000 });
 
-      mockDoctorRepository.findByUserId
-        .mockResolvedValueOnce(existing)
-        .mockResolvedValueOnce(updated);
+      mockDoctorRepository.findByUserId.mockResolvedValue(existing);
       mockDoctorRepository.updateProfile.mockResolvedValue(updated);
 
       await service.updateOwnProfile('doctor-uuid-1', {
@@ -171,17 +185,15 @@ describe('DoctorsService', () => {
       const existing = mockProfile();
       const updated = mockProfile({ about: 'new bio' });
 
-      mockDoctorRepository.findByUserId
-        .mockResolvedValueOnce(existing)
-        .mockResolvedValueOnce(updated);
+      mockDoctorRepository.findByUserId.mockResolvedValue(existing);
       mockDoctorRepository.updateProfile.mockResolvedValue(updated);
 
-      // Simulate event listener throwing an error
+      // Simulate event listener throwing an error — emitEventSafely
+      // catches this and logs via NestJS Logger instead of propagating.
       mockEventEmitter.emit.mockImplementation(() => {
         throw new Error('Listener crashed');
       });
 
-      // The service should catch the error and not propagate it
       const result = await service.updateOwnProfile('doctor-uuid-1', {
         about: 'new bio',
       });
@@ -207,9 +219,7 @@ describe('DoctorsService', () => {
       };
 
       const existing = mockProfile();
-      mockDoctorRepository.findByUserId
-        .mockResolvedValueOnce(existing)
-        .mockResolvedValueOnce(existing);
+      mockDoctorRepository.findByUserId.mockResolvedValue(existing);
       mockDoctorRepository.updateProfile.mockResolvedValue(existing);
 
       await service.updateOwnProfile('doctor-uuid-1', fullDto);

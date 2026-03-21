@@ -8,6 +8,7 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '@/shared/guards/jwt-auth.guard';
 import { RolesGuard } from '@/shared/guards/roles.guard';
@@ -21,9 +22,13 @@ import { UpdateDoctorProfileDto } from '../application/dto';
 export class DoctorsController {
   constructor(private readonly doctorsService: DoctorsService) {}
 
-  /** Public endpoint — anyone can view a doctor's profile. */
+  /**
+   * Public endpoint — anyone can view a verified doctor's profile.
+   * ParseUUIDPipe rejects malformed IDs early (400) instead of letting
+   * invalid strings reach Prisma, which would throw an opaque internal error.
+   */
   @Get(':id')
-  async getProfile(@Param('id') id: string) {
+  async getProfile(@Param('id', ParseUUIDPipe) id: string) {
     const profile = await this.doctorsService.getPublicProfile(id);
     return { success: true, data: profile };
   }
@@ -46,7 +51,7 @@ export class DoctorsController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('admin')
   async verifyDoctor(
-    @Param('id') id: string,
+    @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() admin: JwtPayload,
   ) {
     await this.doctorsService.verifyDoctor(id, admin.sub);
