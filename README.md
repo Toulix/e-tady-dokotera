@@ -183,14 +183,15 @@ cp .env.example .env
 docker compose up
 ```
 
-Docker starts 4 services in dependency order:
+Docker starts 5 services in dependency order:
 
-| Service    | Role                                    | Port  |
-|------------|-----------------------------------------|-------|
-| `postgres`  | PostgreSQL 16 + PostGIS + `pg_trgm`     | 5432  |
-| `redis`     | Redis 7 (BullMQ queues, slot locking)   | 6379  |
-| `api`       | NestJS REST API                         | 3000  |
-| `web`       | React + Vite (HMR)                      | 5173  |
+| Service         | Role                                    | Port  |
+|-----------------|-----------------------------------------|-------|
+| `postgres`      | PostgreSQL 16 + PostGIS + `pg_trgm`     | 5432  |
+| `redis`         | Redis 7 (BullMQ queues, slot locking)   | 6379  |
+| `api`           | NestJS REST API                         | 3000  |
+| `web`           | React + Vite (HMR)                      | 5173  |
+| `prisma-studio` | Visual database browser                 | 5555  |
 
 Database schemas (`auth`, `doctors`, `appointments`, …) and extensions (`postgis`, `pg_trgm`) are created automatically on first run via `infra/docker/init-schemas.sql`. No manual migration step is needed to start.
 
@@ -204,6 +205,7 @@ http://localhost:5173/wiki     →  Interactive tech stack wiki
 http://localhost:3000/api/v1   →  REST API base
 http://localhost:3000/health   →  Health check (no auth required)
 http://localhost:3000/admin/queues  →  BullMQ dashboard (HTTP Basic Auth)
+http://localhost:5555          →  Prisma Studio (visual DB browser)
 ```
 
 **Or run services individually (requires local Postgres and Redis):**
@@ -290,9 +292,23 @@ pnpm --filter @e-tady-dokotera/api db:generate
 pnpm --filter @e-tady-dokotera/api db:migrate:deploy
 ```
 
+**Seed data:**
+
+```bash
+# Seed 20 doctors + 3 patients for local development
+cd apps/api
+DATABASE_URL="postgresql://dev:dev@localhost:5432/e_tady_dokotera" pnpm db:seed
+```
+
+The seed script creates 20 doctor profiles with realistic Malagasy names, French-language specialties, Antananarivo-area coordinates (PostGIS), and facilities — plus 3 test patient accounts. All seeded accounts use the password `password123` and are pre-verified so you can log in immediately.
+
+The script is idempotent — re-running it cleans up previous seed data before re-inserting.
+
+> **Prisma 7 note:** seed configuration lives in `prisma.config.ts` under `migrations.seed`, not in `package.json` (breaking change from Prisma 6).
+
 **Prisma Studio** — visual database browser:
 
-Opens at `http://localhost:5555` — lets you browse and edit all tables across every schema without writing SQL.
+Opens at `http://localhost:5555` via the `prisma-studio` Docker service — lets you browse and edit all tables across every schema without writing SQL.
 
 **Schema conventions:**
 - All IDs: `String @id @default(uuid())`
@@ -332,7 +348,7 @@ All responses follow a consistent envelope:
 | Module          | Base path                  | Description                                       |
 |-----------------|----------------------------|---------------------------------------------------|
 | Auth            | `/api/v1/auth`             | Register, login, OTP verify, token refresh, logout |
-| Doctors         | `/api/v1/doctors`          | Search, profiles, specialties, geospatial queries |
+| Doctors         | `/api/v1/doctors`          | Public profiles, profile update, admin verify     |
 | Appointments    | `/api/v1/appointments`     | Book, cancel, reschedule, confirm, review         |
 | Scheduling      | `/api/v1/scheduling`       | Weekly templates, schedule exceptions, slot locks |
 | Notifications   | `/api/v1/notifications`    | Preferences, SMS opt-out webhook                  |
@@ -446,6 +462,21 @@ docker compose -f docker-compose.prod.yml up -d
 - Set `ADMIN_ALLOWED_IPS` to restrict `/admin/queues`
 - Verify Redis uses `--maxmemory-policy noeviction`
 - Ensure `__Host-refresh_token` cookie is used (enforced by `NODE_ENV=production` in the API)
+
+---
+
+## Implementation Status
+
+Features already built and working:
+
+- **Auth module** (backend) — register, login, OTP verify, token refresh, logout, role-based guards
+- **Auth pages** (frontend) — login, register, OTP verification with auto-logout on idle
+- **Doctor CRUD** (backend) — `GET /doctors/:id` public profile, `PATCH /doctors/profile` self-update, `POST /doctors/:id/verify` admin verification
+- **Database seed** — 20 doctors + 3 patients with PostGIS coordinates, ready for local testing
+- **Docker Compose dev stack** — all services (postgres, redis, api, web, prisma-studio) with health checks
+- **Tech stack wiki** — interactive wiki page at `/wiki`
+
+See [`docs/roadmap.md`](docs/roadmap.md) for the full implementation plan and next steps.
 
 ---
 
