@@ -1,23 +1,10 @@
 import { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import SpecialtyAutocomplete from './SpecialtyAutocomplete';
+import CityAutocomplete from './CityAutocomplete';
+import WhenDropdown from './WhenDropdown';
 
-const CITIES = [
-  'Antananarivo',
-  'Toamasina',
-  'Antsirabe',
-  'Mahajanga',
-  'Fianarantsoa',
-  'Toliara',
-  'Antsiranana',
-] as const;
-
-const WHEN_OPTIONS = [
-  "Aujourd'hui",
-  'Demain',
-  'Cette semaine',
-  'Choisir une date',
-] as const;
+const DEFAULT_CITY = 'Antananarivo';
 
 /**
  * Full-width hero with gradient background and a combined search bar.
@@ -34,8 +21,8 @@ export default function HeroSearch() {
 
   // Pre-fill from URL so the hero reflects the active search
   const [query, setQuery] = useState(searchParams.get('q') ?? '');
-  const [city, setCity] = useState(searchParams.get('city') ?? CITIES[0]);
-  const [when, setWhen] = useState<string>(searchParams.get('when') ?? WHEN_OPTIONS[0]);
+  const [city, setCity] = useState(searchParams.get('city') ?? DEFAULT_CITY);
+  const [when, setWhen] = useState<string>(searchParams.get('when') ?? "Aujourd'hui");
 
   function handleSearch(e: React.FormEvent) {
     e.preventDefault();
@@ -78,45 +65,15 @@ export default function HeroSearch() {
               }}
             />
 
-            {/* Où ? */}
-            <div className="flex-1 w-full flex items-center px-6 gap-3 border-r-0 md:border-r border-outline-variant/30">
-              <span className="material-symbols-outlined text-primary">location_on</span>
-              <div className="flex flex-col items-start w-full">
-                <label htmlFor="hero-city" className="text-[10px] uppercase font-bold text-outline">
-                  Où ?
-                </label>
-                <select
-                  id="hero-city"
-                  value={city}
-                  onChange={(e) => setCity(e.target.value)}
-                  className="w-full bg-transparent border-none focus:ring-0 text-on-surface font-semibold p-0 appearance-none cursor-pointer text-sm"
-                >
-                  {CITIES.map((c) => (
-                    <option key={c}>{c}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
+            {/* Où ? — autocomplete with city + geolocation suggestions */}
+            <CityAutocomplete
+              value={city}
+              onChange={setCity}
+              onSelect={setCity}
+            />
 
-            {/* Quand ? */}
-            <div className="flex-1 w-full flex items-center px-6 gap-3">
-              <span className="material-symbols-outlined text-primary">calendar_today</span>
-              <div className="flex flex-col items-start w-full">
-                <label htmlFor="hero-when" className="text-[10px] uppercase font-bold text-outline">
-                  Quand ?
-                </label>
-                <select
-                  id="hero-when"
-                  value={when}
-                  onChange={(e) => setWhen(e.target.value)}
-                  className="w-full bg-transparent border-none focus:ring-0 text-on-surface font-semibold p-0 appearance-none cursor-pointer text-sm"
-                >
-                  {WHEN_OPTIONS.map((w) => (
-                    <option key={w}>{w}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
+            {/* Quand ? — quick-select pills + calendar date picker */}
+            <WhenDropdown value={when} onChange={setWhen} />
 
             {/* Submit */}
             <button
