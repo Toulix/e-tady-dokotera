@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import SpecialtyAutocomplete from './SpecialtyAutocomplete';
 
 const CITIES = [
   'Antananarivo',
@@ -46,7 +47,7 @@ export default function HeroSearch() {
   }
 
   return (
-    <header className="relative pt-20 overflow-hidden">
+    <header className="relative pt-20 overflow-x-clip">
       <div className="hero-gradient min-h-[600px] flex flex-col items-center justify-center px-6 text-center text-on-primary">
         {/* Background image overlay for depth */}
         <div className="absolute inset-0 z-0 opacity-10 bg-[url('/hero-bg.webp')] bg-cover bg-center" />
@@ -68,23 +69,14 @@ export default function HeroSearch() {
             onSubmit={handleSearch}
             className="w-full bg-surface-container-lowest rounded-full p-2 shadow-2xl flex flex-col md:flex-row items-center gap-1"
           >
-            {/* Quoi ? */}
-            <div className="flex-1 w-full flex items-center px-6 gap-3 border-r-0 md:border-r border-outline-variant/30">
-              <span className="material-symbols-outlined text-primary">search</span>
-              <div className="flex flex-col items-start w-full">
-                <label htmlFor="hero-query" className="text-[10px] uppercase font-bold text-outline">
-                  Quoi ?
-                </label>
-                <input
-                  id="hero-query"
-                  type="text"
-                  value={query}
-                  onChange={(e) => setQuery(e.target.value)}
-                  placeholder="Nom, spécialité..."
-                  className="w-full bg-transparent border-none focus:ring-0 text-on-surface font-semibold p-0 placeholder:text-outline-variant text-sm"
-                />
-              </div>
-            </div>
+            {/* Quoi ? — autocomplete with specialty + doctor suggestions */}
+            <SpecialtyAutocomplete
+              value={query}
+              onChange={setQuery}
+              onSelect={(selected) => {
+                setQuery(selected);
+              }}
+            />
 
             {/* Où ? */}
             <div className="flex-1 w-full flex items-center px-6 gap-3 border-r-0 md:border-r border-outline-variant/30">
