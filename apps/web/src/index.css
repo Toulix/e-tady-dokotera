@@ -21,12 +21,19 @@ html, body {
   --color-on-primary-fixed-variant:  #004a78;
   --color-surface:                   #f8f9ff;
   --color-surface-container-lowest:  #ffffff;
+  --color-surface-container-low:     #f2f3f9;
+  --color-surface-container:         #eceef3;
+  --color-surface-container-high:    #e6e8ed;
   --color-surface-container-highest: #e1e2e8;
   --color-on-surface:                #191c20;
   --color-on-surface-variant:        #414750;
   --color-outline:                   #717881;
   --color-outline-variant:           #c0c7d1;
+  --color-secondary:                 #40627b;
+  --color-on-secondary:              #ffffff;
   --color-secondary-container:       #bee1fe;
+  --color-tertiary:                  #764400;
+  --color-on-tertiary:               #ffffff;
   --color-error-container:           #ffdad6;
   --color-on-error-container:        #93000a;
 }
@@ -67,4 +74,44 @@ html, body {
 }
 .field-input:focus {
   box-shadow: 0 0 0 2px var(--color-primary-container);
+}
+
+/* ─── Landing page utilities ──────────────────────────────────────────────── */
+.hero-gradient {
+  background: linear-gradient(135deg, var(--color-primary-container) 0%, var(--color-on-primary-fixed-variant) 100%);
+}
+
+.glass-nav {
+  background-color: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(20px);
+}
+
+/* Toggle switch — pure CSS, no JS library needed */
+.toggle-track {
+  width: 2.75rem;
+  height: 1.5rem;
+  border-radius: 9999px;
+  background-color: var(--color-surface-container);
+  position: relative;
+  cursor: pointer;
+  transition: background-color 0.2s;
+}
+.toggle-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 9999px;
+  background: white;
+  border: 1px solid var(--color-outline-variant);
+  transition: transform 0.2s;
+}
+.toggle-track[data-checked="true"] {
+  background-color: var(--color-primary);
+}
+.toggle-track[data-checked="true"]::after {
+  transform: translateX(1.25rem);
+  border-color: transparent;
 }

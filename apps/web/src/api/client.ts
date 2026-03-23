@@ -18,6 +18,21 @@ apiClient.interceptors.request.use((config) => {
 // swallows the error and triggers a full-page redirect that resets state.
 const AUTH_PATHS = ['/auth/login', '/auth/register', '/auth/verify-otp'];
 
+// Shared promise so that concurrent 401s don't each trigger a separate
+// refresh request. Without this, the server rotates the refresh token on
+// the first call and all subsequent parallel refresh attempts fail,
+// causing an unnecessary logout.
+let activeRefresh: Promise<void> | null = null;
+
+function refreshOnce(): Promise<void> {
+  if (!activeRefresh) {
+    activeRefresh = refreshTokens().finally(() => {
+      activeRefresh = null;
+    });
+  }
+  return activeRefresh;
+}
+
 // Silently refresh on 401
 apiClient.interceptors.response.use(
   (res) => res,
@@ -32,7 +47,7 @@ apiClient.interceptors.response.use(
     ) {
       (error.config as any)._retry = true;
       try {
-        await refreshTokens();
+        await refreshOnce();
         const token = useAuthStore.getState().accessToken;
         error.config.headers.Authorization = `Bearer ${token}`;
         return apiClient(error.config);
