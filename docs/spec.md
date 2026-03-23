@@ -2,11 +2,14 @@ Healthcare Booking Platform - Technical Specification
 
 ## Madagascar Medical Appointment System
 
-**Version:** 1.6 (Sixth Architect Review — Application Security)
+**Version:** 1.7 (Seventh Architect Review — Cross-Document Consistency & Data Model Gaps)
 
 **Date:** March 2026
 
 **Target Market:** Madagascar
+
+> ⚠️ **Review Note (v1.7):** Seventh architect review — cross-document consistency audit and data model gap closure. Corrections applied: (1) §2.3 DB cost corrected from ~$25 to ~$30 (consistency with §16.2); (2) §2.5 deployment diagram DB cost corrected from ~$50 to ~$30; (3) §2.6 cost table DB corrected from ~$50 to ~$30, totals from ~$435–$1,035 to ~$415–$1,015; (4) duplicate Jibri architect note removed from §3.2.4; (5) §2.2 domain events: `AppointmentConfirmed` added; (6) §5.1 `Review` entity formally modeled in doctors schema; (7) §2.4 auth formatting artifact fixed; (8) footer document version updated to 1.7.
+>
 
 > ⚠️ **Review Note (v1.6):** Sixth architect review — application security audit against `domain-security/findings.md`. Corrections applied: (1) §6.2 Video Consultation updated — Jitsi JWT changed to 4h, `GET /token-refresh` endpoint added; (2) §6.2 Admin added `POST /admin/users/:id/suspend` with Redis JWT denylist requirement (HIGH-04); (3) §6.2 Appointments — `GET /appointments/:id/prescription-url` added with access control spec (LOW-02); (4) §8.1 SMS opt-out compliance — `sms_opt_outs` table, inbound webhook, and pre-send check documented (MED-04). Findings already implemented in prior reviews: CRIT-01 (RegisterDto `@IsIn(['patient'])`), MED-01 (HIPAA language replaced with Madagascar law reference), MED-05 (WebSocket afterInit CORS via ConfigService).
 >
@@ -236,6 +239,7 @@ src/
 
 ```
 AppointmentBooked      → Notifications (send confirmation SMS)
+AppointmentConfirmed   → Notifications (send confirmation SMS if not already sent by auto-confirm)
 AppointmentCancelled   → Notifications (send cancellation SMS) + Scheduling (free slot)
 AppointmentCompleted   → Analytics (record) + Notifications (request review)
 DoctorVerified         → Doctors (mark profile live)
@@ -271,7 +275,7 @@ CREATE SCHEMA payments;      -- payment_events, transactions (Phase 2)
 
 **Scaling path for the database:**
 
-- **Phase 1 (MVP):** Single primary instance (DigitalOcean `db-s-1vcpu-2gb`, ~$25/month)
+- **Phase 1 (MVP):** Single primary instance (DigitalOcean `db-s-1vcpu-2gb`, ~$30/month)
 - **Phase 2 (Growth):** Add read replica; analytics and reporting queries routed there
 - **Phase 3 (Scale):** PgBouncer connection pooling; partition appointments table by `start_time` (range partitioning by month)
 - **Phase 4 (Extract):** If a module becomes a bottleneck, its schema can be migrated to a standalone database when extracted as a microservice
@@ -283,7 +287,7 @@ CREATE SCHEMA payments;      -- payment_events, transactions (Phase 2)
 - **Framework: NestJS (TypeScript)** — built-in module system maps directly to this architecture. ~~Django (Python) as alternative~~ — removed to eliminate ambiguity. Pick one stack and commit. NestJS is the right choice here: TypeScript across the full stack reduces context-switching, the built-in dependency injection supports clean module boundaries, and the ecosystem (Bull, Prisma/TypeORM, Passport) covers all requirements.
 - **API:** RESTful (JSON). GraphQL is explicitly out of scope for MVP — adds complexity without proportionate benefit at this stage.
 - **Real-time:** WebSocket via [Socket.io](http://Socket.io) for live availability updates and in-app notifications. Required packages: `@nestjs/websockets`, `@nestjs/platform-socket.io`, `socket.io`. A dedicated `AvailabilityGateway` pushes `slot-locked` and `slot-released` events to connected patients in the same doctor's availability room, eliminating the need to poll the availability endpoint during the booking flow.
-- Authentication:*- JWT access tokens (15 min expiry) + refresh tokens (7 days, rotated on use)
+- **Authentication:** JWT access tokens (15 min expiry) + refresh tokens (7 days, rotated on use)
 - Refresh token delivery: the API sets the refresh token exclusively via a `Set-Cookie: refresh_token=...; HttpOnly; Secure; SameSite=Strict` response header. It is **never** returned in the JSON response body. JavaScript (including the React frontend) cannot read or write `HttpOnly` cookies — this is the security property being exploited. The access token is returned in the response body and stored in Zustand memory state only (not localStorage, not sessionStorage).
 - Refresh token server-side: stored in Redis (`refresh:{user_id}` key, TTL 7 days, rotated on every `/auth/refresh` call)
 - **Background jobs:** BullMQ (Redis-backed) for SMS scheduling, appointment reminders, analytics event processing
@@ -379,7 +383,7 @@ CREATE SCHEMA payments;      -- payment_events, transactions (Phase 2)
 │                                          │
 │  ┌────────────────────────────────────┐  │
 │  │  Managed PostgreSQL (DO DB)        │  │
-│  │  (~$50/month, daily backups,       │  │
+│  │  (~$30/month, daily backups,       │  │
 │  │   point-in-time recovery)          │  │
 │  └────────────────────────────────────┘  │
 │                                          │
@@ -416,7 +420,7 @@ CREATE SCHEMA payments;      -- payment_events, transactions (Phase 2)
 | Component | Microservices (rejected) | Modular Monolith (adopted) |
 | --- | --- | --- |
 | Compute | ~$500 (8 containers) | ~$80 (1 Droplet, 4 vCPU/8 GB) |
-| Database | ~$300 (multiple DBs) | ~$50 (1 Managed PostgreSQL) |
+| Database | ~$300 (multiple DBs) | ~$30 (1 Managed PostgreSQL, `db-s-1vcpu-2gb`) |
 | Redis | ~$100 | ~$0 (co-located at MVP) |
 | Kubernetes | ~$200 | $0 (not needed) |
 | Load balancer | ~$200 | ~$0 (not needed at MVP) |
@@ -424,12 +428,12 @@ CREATE SCHEMA payments;      -- payment_events, transactions (Phase 2)
 | Video (Jitsi) | ~$200 | ~$40 (small Droplet) |
 | Object Storage | — | ~$20 (DO Spaces) |
 | CDN/WAF | ~$200 | ~$20 (Cloudflare Pro) |
-| **Total/month** | **~$2,000–5,000** | **~$435–$1,035** |
-| **6-month cost** | **~$12,000–30,000** | **~$2,600–$6,200** |
+| **Total/month** | **~$2,000–5,000** | **~$415–$1,015** |
+| **6-month cost** | **~$12,000–30,000** | **~$2,490–$6,090** |
 
 **Saving over 6-month MVP: ~$10,000–28,000** (see §16.2 for full breakdown)
 
-> ⚠️ **v1.3 correction:** Previous versions showed ~$210–350/month total, which excluded SMS costs ($200–800/month volume-dependent) and understated the database cost. §16.2's detailed table (~$435–$1,035/month) is the correct figure.
+> ⚠️ **v1.7 correction:** Database cost corrected from ~$50 to ~$30 (`db-s-1vcpu-2gb` tier, 2 GB RAM) for consistency with §16.2. Totals updated accordingly.
 
 ---
 
@@ -806,10 +810,7 @@ Ref: [BOOKING_ID]
 - Low-data mode
 
 > 🔧 **Architect note on call recording:** Recording WebRTC calls in Jitsi requires the Jibri component (Jitsi Broadcasting Infrastructure). This is a non-trivial operational addition — it requires a dedicated VM, screen capture, and FFmpeg pipeline. For MVP, call recording should be **disabled by default** and scheduled as a Phase 2 feature. Document this constraint explicitly so the product team plans accordingly.
-> 
-
-> 🔧 **Architect note on call recording:** Recording WebRTC calls in Jitsi requires the Jibri component (Jitsi Broadcasting Infrastructure). This is a non-trivial operational addition — it requires a dedicated VM, screen capture, and FFmpeg pipeline. For MVP, call recording should be **disabled by default** and scheduled as a Phase 2 feature. Document this constraint explicitly so the product team plans accordingly.
-> 
+>
 
 ---
 
@@ -974,7 +975,27 @@ Ref: [BOOKING_ID]
 ```
 
 > 🔧 **Architect note:** Fees renamed to `consultation_fee_mga` and typed as `INTEGER`. Never store monetary values as `DECIMAL`/`FLOAT` — floating point errors in financial data are a serious bug class. Store Ariary as an integer (1 MGA = 1 unit). Display formatting is the UI's responsibility.
-> 
+>
+
+#### Review (doctors schema)
+
+> ⚠️ **v1.7 addition:** This entity was missing from §5.1 despite being referenced by `POST /doctors/:id/reviews` (§6.2) and by the `ReviewSubmitted` domain event (§2.2). `DoctorProfile.average_rating` and `total_reviews` are updated atomically within the Doctors module on each review insertion.
+
+```tsx
+{
+  id: UUID (PK)
+  doctor_id: UUID (FK → doctors.profiles.user_id)
+  patient_id: UUID (FK → auth.users)
+  appointment_id: UUID (UNIQUE FK → appointments.appointments)  // one review per appointment
+  rating: INTEGER  // 1–5 (whole stars only; average_rating uses 0–500 scale for precision)
+  comment: TEXT | NULL
+  created_at: TIMESTAMPTZ
+
+  UNIQUE(appointment_id)  // enforces one review per completed appointment
+}
+```
+
+> 🔧 **Note:** The `appointment_id` unique constraint prevents duplicate reviews. The guard on `POST /doctors/:id/reviews` must verify the appointment status is `'completed'` and the patient matches `req.user.sub` before allowing insertion.
 
 #### Facility
 
@@ -1835,7 +1856,25 @@ The v1.1 review corrected internal consistency issues (primarily the Kubernetes/
 
 ---
 
-**Document Version:** 1.5 (Fifth Architect Review — Infrastructure & DevOps)
+## 25. Architecture Review Summary — v1.7 Changes
+
+> This section documents changes made in the v1.7 cross-document consistency review. All prior changes remain in Sections 19, 21, 22, 23, and 24.
+
+| # | Area | v1.6 | v1.7 | Reason |
+| --- | --- | --- | --- | --- |
+| H-01 | §3.2.4 Jibri architect note | Duplicated verbatim (copy-paste artifact) | Second copy removed | Duplicate content |
+| H-02 | §2.6 DB cost | `~$50 (1 Managed PostgreSQL)` | `~$30 (1 Managed PostgreSQL, db-s-1vcpu-2gb)` | Inconsistent with §16.2 which was corrected to ~$30 in v1.5 |
+| H-02 | §2.6 totals | `~$435–$1,035` / `~$2,600–$6,200` | `~$415–$1,015` / `~$2,490–$6,090` | Propagated DB cost correction |
+| M-04 | §5.1 data models | No `Review` entity | `Review` entity formally modeled in doctors schema | Referenced by `POST /doctors/:id/reviews`, `ReviewSubmitted` event, and `average_rating` updates — but never defined |
+| M-06 | §2.5 deployment diagram | DB cost `~$50/month` | `~$30/month` | Same inconsistency as H-02 |
+| LOW | §2.3 scaling path | DB `~$25/month` | `~$30/month` | Inconsistent with §16.2 (`db-s-1vcpu-2gb` is ~$30) |
+| LOW | §2.4 Authentication | `Authentication:*-` (formatting artifact) | `**Authentication:**` (corrected) | Broken markdown rendering |
+| LOW | §2.2 domain events | No `AppointmentConfirmed` event | Added `AppointmentConfirmed` event | Used in roadmap Step 20 but absent from spec event catalog |
+| LOW | Footer document version | `1.5` | `1.7` | Footer version never updated past v1.5 |
+
+---
+
+**Document Version:** 1.7 (Seventh Architect Review — Cross-Document Consistency & Data Model Gaps)
 
 **Original Version:** 1.0 (February 17, 2026)
 

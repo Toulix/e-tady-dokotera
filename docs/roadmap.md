@@ -1,4 +1,4 @@
-technical-roadmap-v1.7-security-review
+technical-roadmap-v1.8-cross-doc-review
 
 # 🗺️ Technical Roadmap — Step-by-Step Build Guide
 
@@ -94,8 +94,8 @@ Repository layout:
 
 ```yaml
 packages:
--'apps/*'
--'packages/*'
+  - 'apps/*'
+  - 'packages/*'
 ```
 
 `package.json` (workspace root):
@@ -796,21 +796,22 @@ Develop & iterate
 
 `apps/api/prisma/schema.prisma` — key patterns to enforce:
 
-```jsx
+**`apps/api/prisma.config.ts`** — Prisma v7 requires database connection configuration here, not in `schema.prisma`:
+
+> ⚠️ **v1.7 addition:** Prisma v7 moved the database connection URL from the `datasource` block in `schema.prisma` to a separate `prisma.config.ts` file. The `url = env("DATABASE_URL")` line in the datasource block is ignored in v7+. Without this file, `prisma migrate dev` and `prisma generate` fail with a connection error.
+
+```prisma
 generator client {
   provider        = "prisma-client-js"
   previewFeatures = ["multiSchema", "postgresqlExtensions"]
-  // Note: multiSchema and postgresqlExtensions are preview features.
-  // Monitor https://www.prisma.io/docs/orm/prisma-schema/postgresql-extensions
-  // for when they reach stable — the API may change on promotion.
+  // v1.7 note: multiSchema graduated to GA in Prisma 5.9+ and postgresqlExtensions
+  // in Prisma 5.15+. If using Prisma 6+, these can be removed from previewFeatures.
+  // Keeping them is harmless (generates a deprecation warning) but they are no longer required.
 }
-
-Configure your database connection in prisma.config.ts instead:
-[Link](https://www.prisma.io/docs/guides/upgrade-prisma-orm/v7#after-v7)
 
 datasource db {
   provider   = "postgresql"
-  url        = env("DATABASE_URL") // incorrect for v7, add database connection in  prisma.config.ts
+  url        = env("DATABASE_URL")  // v7: this line is ignored; connection configured in prisma.config.ts
   schemas    = ["auth", "doctors", "appointments", "scheduling",
                 "notifications", "video", "analytics", "payments"]
   extensions = [postgis, pg_trgm]
@@ -860,7 +861,7 @@ model User {
 // Encapsulate these in FacilityRepository — never use $queryRaw outside a repository class.
 
 model Facility {
-  id          String  @id @default(uuid())
+  id          String  @id @default(dbgenerated("gen_random_uuid()"))
   name        String
   // ...other fields
   geolocation Unsupported("geometry(Point, 4326)")?  // PostGIS point — Unsupported() required
@@ -880,6 +881,22 @@ model Facility {
 //     ${radiusKm * 1000}
 //   )
 // `;
+
+// Review — v1.7 addition: formally modeled to support POST /doctors/:id/reviews
+// One review per completed appointment. Rating is 1–5; DoctorProfile.average_rating
+// (0–500 scale) is updated atomically by the Doctors module on insertion.
+model Review {
+  id            String   @id @default(dbgenerated("gen_random_uuid()"))
+  doctorId      String   @map("doctor_id")
+  patientId     String   @map("patient_id")
+  appointmentId String   @unique @map("appointment_id")
+  rating        Int      // 1–5 whole stars
+  comment       String?
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("reviews")
+  @@schema("doctors")
+}
 
 // SlotLock — used by the two-layer slot locking strategy in Phase 4
 model SlotLock {
@@ -1701,10 +1718,17 @@ async getAvailability(doctorId: string, startDate: string, endDate: string) {
   return slots;
 }
 
-// Call this from any event handler that changes availability for a doctor:
+// Call this from any event handler that changes availability for a doctor.
+// v1.7 fix: KEYS command replaced with SCAN — KEYS blocks Redis and scans all keys,
+// which becomes a performance problem at scale. SCAN is non-blocking and cursor-based.
 async invalidateAvailabilityCache(doctorId: string): Promise<void> {
-  const keys = await this.redis.keys(`avail:${doctorId}:*`);
-  if (keys.length > 0) await this.redis.del(...keys);
+  const pattern = `avail:${doctorId}:*`;
+  let cursor = '0';
+  do {
+    const [nextCursor, keys] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+    cursor = nextCursor;
+    if (keys.length > 0) await this.redis.del(...keys);
+  } while (cursor !== '0');
 }
 ```
 
@@ -1779,13 +1803,19 @@ export class AvailabilityGateway implements OnGatewayInit {
   private readonly logger = new Logger(AvailabilityGateway.name);
 
   // Called immediately after the gateway is initialized — fail fast if CORS is misconfigured.
+  // v1.7 fix: only throw in production. In development, a missing FRONTEND_URL prevents the
+  // entire app from starting — even for features unrelated to WebSocket.
   afterInit(): void {
     if (!process.env.FRONTEND_URL) {
-      throw new Error(
-        'FRONTEND_URL env var is required for WebSocket CORS. Without it, Socket.io allows all origins.',
-      );
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error(
+          'FRONTEND_URL env var is required for WebSocket CORS. Without it, Socket.io allows all origins.',
+        );
+      }
+      this.logger.warn('FRONTEND_URL not set — WebSocket accepts all origins (dev only)');
+    } else {
+      this.logger.log(`AvailabilityGateway initialized. CORS origin: ${process.env.FRONTEND_URL}`);
     }
-    this.logger.log(`AvailabilityGateway initialized. CORS origin: ${process.env.FRONTEND_URL}`);
   }
 
   // Patient joins a "room" for a specific doctor to receive live slot updates
@@ -3548,7 +3578,7 @@ If you start tomorrow, do exactly these steps in order:
 - [ ]  Write `turbo.json` with `"tasks"` key (NOT `"pipeline"` — Turborepo v2 breaking change)
 - [ ]  Write `docker-compose.yml` (postgis, redis with `noeviction`, api stub, web stub — no bull-board container)
 - [ ]  Write `docker-compose.test.yml` (postgres-test on 5433, redis-test on 6380, both with `noeviction`, test DB on tmpfs)
-- [ ]  Write `infra/docker/init-schemas.sql` (7 schemas + 3 extensions)
+- [ ]  Write `infra/docker/init-schemas.sql` (8 schemas + 2 extensions)
 - [ ]  Scaffold NestJS in `apps/api` — install all packages from Step 3 (including `cookie-parser`, `helmet`, `@nestjs/event-emitter`)
 - [ ]  Wire `ConfigModule`, `RedisModule`, `BullModule`, `EventEmitterModule` in `AppModule` (Step 3b)
 - [ ]  Wire `cookieParser()`, `helmet()`, `enableCors()`, global interceptor + exception filter in `main.ts`
@@ -3631,7 +3661,7 @@ Critical bugs fixed: (1) `SELECT FOR UPDATE` on wrong table — replaced with `I
 
 ---
 
-*Roadmap version 1.7 · March 2026 · Derived from Technical Specification v1.6 (security-review changes below)*
+*Roadmap version 1.8 · March 2026 · Derived from Technical Specification v1.7 (cross-doc consistency review changes below)*
 
 ---
 
@@ -3712,3 +3742,17 @@ Critical bugs fixed: (1) `SELECT FOR UPDATE` on wrong table — replaced with `I
 ---
 
 *Roadmap version 1.6 (infra-review) · March 2026 · Derived from Technical Specification v1.5*
+
+---
+
+### v1.8 Changes — Cross-Document Consistency Review
+
+| # | ID | Location | Change | Reason |
+|---|---|---|---|---|
+| 1 | H-03 | Step 4 — Prisma schema | Added `prisma.config.ts` example for Prisma v7; noted `multiSchema`/`postgresqlExtensions` preview features are now GA | Prisma v7 moves DB connection to `prisma.config.ts`; without this file, `prisma migrate` and `prisma generate` fail |
+| 2 | H-04 | Step 4 — Facility model | `@default(uuid())` → `@default(dbgenerated("gen_random_uuid()"))` | Contradicted the stated convention to standardize on DB-side UUID generation |
+| 3 | M-01 | Step 17 — `invalidateAvailabilityCache()` | `redis.keys()` replaced with cursor-based `redis.scan()` loop | `KEYS` blocks Redis and scans all keys; Redis docs explicitly warn against production use |
+| 4 | M-03 | Step 18b — `AvailabilityGateway.afterInit()` | Only throw on missing `FRONTEND_URL` in production; warn in development | Throwing in dev prevents the entire app from starting for unrelated features |
+| 5 | M-04 | Step 4 — Prisma schema | Added `Review` model (doctors schema) | Referenced by `POST /doctors/:id/reviews` and `ReviewSubmitted` event but never modeled |
+| 6 | M-05 | Day 1 checklist | "7 schemas + 3 extensions" → "8 schemas + 2 extensions" | 8 schemas (including payments); only 2 extensions (postgis, pg_trgm) after uuid-ossp removal |
+| 7 | LOW | Step 1 — `pnpm-workspace.yaml` | Fixed YAML syntax: `- 'apps/*'` (added missing spaces) | Invalid YAML: `-'apps/*'` without space after dash causes parse error |
