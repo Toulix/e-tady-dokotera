@@ -55,7 +55,10 @@ export default function LoginPage() {
         access_token,
       );
 
-      navigate('/patient/dashboard', { replace: true });
+      // Route to the correct dashboard based on the user's role —
+      // doctors and patients have different landing pages after login.
+      const dashboard = user.userType === 'doctor' ? '/doctor/dashboard' : '/patient/dashboard';
+      navigate(dashboard, { replace: true });
     } catch (err) {
       if (err instanceof AxiosError) {
         const msg = err.response?.data?.error?.message;

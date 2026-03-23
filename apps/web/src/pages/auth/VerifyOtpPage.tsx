@@ -12,13 +12,30 @@ import arrowRightIcon from '../../assets/arrow_right_icon.svg';
 
 const OTP_LENGTH = 6;
 
+/**
+ * Guard component: extracts phoneNumber from router state and redirects
+ * to /auth/register if missing. This keeps the conditional return BEFORE
+ * any hooks, avoiding a fragile hook-ordering pattern that would break
+ * the Rules of Hooks if a hook were ever added after the guard.
+ */
 export default function VerifyOtpPage() {
-  const navigate = useNavigate();
   const location = useLocation();
-  const setAuth = useAuthStore((s) => s.setAuth);
-
-  // Phone number passed from RegisterPage via router state
   const phoneNumber = (location.state as { phoneNumber?: string })?.phoneNumber;
+
+  if (!phoneNumber) {
+    return <Navigate to="/auth/register" replace />;
+  }
+
+  return <VerifyOtpForm phoneNumber={phoneNumber} />;
+}
+
+/**
+ * All hooks live here — called unconditionally every render,
+ * satisfying the Rules of Hooks.
+ */
+function VerifyOtpForm({ phoneNumber }: { phoneNumber: string }) {
+  const navigate = useNavigate();
+  const setAuth = useAuthStore((s) => s.setAuth);
 
   const [digits, setDigits] = useState<string[]>(Array(OTP_LENGTH).fill(''));
   const [error, setError] = useState('');
@@ -29,11 +46,6 @@ export default function VerifyOtpPage() {
   useEffect(() => {
     inputRefs.current[0]?.focus();
   }, []);
-
-  // If no phone number in state, the user navigated here directly — redirect to register
-  if (!phoneNumber) {
-    return <Navigate to="/auth/register" replace />;
-  }
 
   function updateDigit(index: number, value: string) {
     const digit = value.replace(/\D/g, '').slice(-1);
@@ -103,7 +115,9 @@ export default function VerifyOtpPage() {
         access_token,
       );
 
-      navigate('/patient/dashboard', { replace: true });
+      // Route to the correct dashboard based on the user's role
+      const dashboard = user.userType === 'doctor' ? '/doctor/dashboard' : '/patient/dashboard';
+      navigate(dashboard, { replace: true });
     } catch (err) {
       if (err instanceof AxiosError) {
         const msg = err.response?.data?.error?.message;
