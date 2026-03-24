@@ -1,4 +1,6 @@
+import { useState, useEffect } from 'react';
 import { useSearchParams } from 'react-router-dom';
+import { useDebounce } from '../../hooks/useDebounce';
 
 /**
  * Maps French UI labels to the lowercase enum values the backend expects.
@@ -18,6 +20,12 @@ interface FiltersSidebarProps {
    * so the search effect re-fires automatically.
    */
   onFilterChange: (key: string, value: string | null) => void;
+  /**
+   * Clears all sidebar filters in a single URL update.
+   * Without this, clearing each filter individually would trigger
+   * separate API fetches — only the last one being correct.
+   */
+  onClearFilters: () => void;
 }
 
 /**
@@ -28,12 +36,30 @@ interface FiltersSidebarProps {
  * - Filters are reflected in the URL → shareable/bookmarkable
  * - SearchPage's useEffect re-fetches when any filter changes
  * - No state synchronization bugs between sidebar and search
+ *
+ * The specialty text input is debounced (300ms) so typing doesn't
+ * fire an API request on every keystroke.
  */
-export default function FiltersSidebar({ onFilterChange }: FiltersSidebarProps) {
+export default function FiltersSidebar({ onFilterChange, onClearFilters }: FiltersSidebarProps) {
   const [searchParams] = useSearchParams();
 
   const activeLanguage = searchParams.get('language') || '';
   const activeSpecialty = searchParams.get('specialty') || '';
+
+  // Local state for the specialty input — debounced before updating the URL
+  // so each keystroke doesn't trigger an API call.
+  const [localSpecialty, setLocalSpecialty] = useState(activeSpecialty);
+  const debouncedSpecialty = useDebounce(localSpecialty, 300);
+
+  // Sync debounced value to URL params
+  useEffect(() => {
+    onFilterChange('specialty', debouncedSpecialty || null);
+  }, [debouncedSpecialty]);
+
+  // Keep local input in sync when URL changes externally (e.g. filter reset)
+  useEffect(() => {
+    setLocalSpecialty(activeSpecialty);
+  }, [activeSpecialty]);
 
   return (
     <aside className="space-y-8">
@@ -54,10 +80,8 @@ export default function FiltersSidebar({ onFilterChange }: FiltersSidebarProps) 
           <input
             id="filter-specialty"
             type="text"
-            value={activeSpecialty}
-            onChange={(e) =>
-              onFilterChange('specialty', e.target.value || null)
-            }
+            value={localSpecialty}
+            onChange={(e) => setLocalSpecialty(e.target.value)}
             placeholder="Ex : Cardiologie"
             className="w-full bg-surface-container border-none rounded-full px-4 py-2.5 text-sm font-semibold focus:ring-2 focus:ring-primary placeholder:text-outline-variant"
           />
@@ -94,8 +118,8 @@ export default function FiltersSidebar({ onFilterChange }: FiltersSidebarProps) 
           <button
             type="button"
             onClick={() => {
-              onFilterChange('language', null);
-              onFilterChange('specialty', null);
+              setLocalSpecialty('');
+              onClearFilters();
             }}
             className="w-full py-2 text-sm text-primary font-semibold hover:underline cursor-pointer"
           >

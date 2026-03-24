@@ -2,7 +2,8 @@ import { useState, useRef, useEffect, useCallback } from 'react';
 import { DayPicker } from 'react-day-picker';
 import 'react-day-picker/style.css';
 import { fr } from 'react-day-picker/locale';
-import { format, addDays, startOfWeek, endOfWeek } from 'date-fns';
+import { fr as frDateFns } from 'date-fns/locale';
+import { format, startOfWeek, endOfWeek } from 'date-fns';
 
 // ─── Quick-select options ───────────────────────────────────────────────────
 // These are the preset date filters shown as pill buttons at the top
@@ -63,7 +64,8 @@ export default function WhenDropdown({ value, onChange }: WhenDropdownProps) {
       if (!date) return;
       setSelectedDate(date);
       // Format: "lun. 11 oct. 2024" — human-readable French date
-      const formatted = format(date, 'EEE dd MMM yyyy', { locale: undefined });
+      // frDateFns gives French day/month names: "lun. 11 oct. 2024"
+      const formatted = format(date, 'EEE dd MMM yyyy', { locale: frDateFns });
       onChange(formatted);
       setShowCalendar(false);
       setIsOpen(false);

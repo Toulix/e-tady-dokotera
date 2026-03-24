@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { apiClient } from '../api/client';
 import HeroSearch from '../components/landing/HeroSearch';
@@ -93,12 +93,14 @@ export default function SearchPage() {
       const city = searchParams.get('city');
       const specialty = searchParams.get('specialty');
       const language = searchParams.get('language');
+      const sort = searchParams.get('sort');
       const limit = searchParams.get('limit') || '20';
 
       if (q) params.set('q', q);
       if (city) params.set('city', city);
       if (specialty) params.set('specialty', specialty);
       if (language) params.set('language', language);
+      if (sort) params.set('sort', sort);
       params.set('page', String(page));
       params.set('limit', limit);
 
@@ -144,15 +146,33 @@ export default function SearchPage() {
     return () => controller.abort();
   }, [searchParams, buildApiParams]);
 
+  // Tracks the in-flight "load more" request so it can be aborted
+  // when filters change (the main useEffect re-fires) to prevent
+  // stale page-2+ results from being appended to a fresh result set.
+  const loadMoreController = useRef<AbortController | null>(null);
+
+  // Abort any pending load-more when search params change,
+  // because the main fetch will replace the entire result set.
+  useEffect(() => {
+    loadMoreController.current?.abort();
+  }, [searchParams]);
+
   /** Appends the next page of results to the existing list. */
   async function handleLoadMore() {
     if (loadingMore || currentPage >= totalPages) return;
+
+    loadMoreController.current?.abort();
+    const controller = new AbortController();
+    loadMoreController.current = controller;
 
     const nextPage = currentPage + 1;
     try {
       setLoadingMore(true);
       const params = buildApiParams(nextPage);
-      const response = await apiClient.get('/doctors/search', { params });
+      const response = await apiClient.get('/doctors/search', {
+        params,
+        signal: controller.signal,
+      });
 
       if (response.data.success && response.data.data) {
         const { doctors: raw, page } = response.data.data;
@@ -160,10 +180,13 @@ export default function SearchPage() {
         setCurrentPage(page ?? nextPage);
       }
     } catch (err) {
+      if (controller.signal.aborted) return;
       console.error('Load more failed:', err);
       setError('Erreur lors du chargement. Veuillez réessayer.');
     } finally {
-      setLoadingMore(false);
+      if (!controller.signal.aborted) {
+        setLoadingMore(false);
+      }
     }
   }
 
@@ -185,6 +208,21 @@ export default function SearchPage() {
     });
   }
 
+  /**
+   * Removes all sidebar filter params in a single URL update.
+   * Without this, clearing N filters would trigger N separate
+   * re-fetches — only the last one producing the correct result.
+   */
+  function clearFilters() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete('language');
+      next.delete('specialty');
+      next.delete('page');
+      return next;
+    });
+  }
+
   const q = searchParams.get('q');
   const city = searchParams.get('city') || 'Antananarivo';
 
@@ -194,7 +232,7 @@ export default function SearchPage() {
 
       {/* Filters + Results grid */}
       <main className="max-w-7xl mx-auto px-8 py-12 grid grid-cols-1 lg:grid-cols-4 gap-12">
-        <FiltersSidebar onFilterChange={updateSearchParam} />
+        <FiltersSidebar onFilterChange={updateSearchParam} onClearFilters={clearFilters} />
 
         <section className="lg:col-span-3 space-y-8">
           {/* Results header */}
