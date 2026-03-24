@@ -33,8 +33,11 @@ export class DoctorsController {
    */
   @Get('search')
   async searchDoctors(@Query() query: SearchDoctorsQueryDto) {
-    const result = await this.doctorsService.searchDoctors(query);
-    return { success: true, data: result };
+    // Return raw result — ResponseEnvelopeInterceptor wraps it in
+    // { success, data, meta } automatically. Returning { success, data }
+    // here would double-wrap the response, causing the frontend to find
+    // doctors at response.data.data.data instead of response.data.data.
+    return this.doctorsService.searchDoctors(query);
   }
 
   /**
@@ -44,8 +47,7 @@ export class DoctorsController {
    */
   @Get(':id')
   async getProfile(@Param('id', ParseUUIDPipe) id: string) {
-    const profile = await this.doctorsService.getPublicProfile(id);
-    return { success: true, data: profile };
+    return this.doctorsService.getPublicProfile(id);
   }
 
   /** Doctor updates their own profile. */
@@ -56,8 +58,7 @@ export class DoctorsController {
     @CurrentUser() user: JwtPayload,
     @Body() dto: UpdateDoctorProfileDto,
   ) {
-    const profile = await this.doctorsService.updateOwnProfile(user.sub, dto);
-    return { success: true, data: profile };
+    return this.doctorsService.updateOwnProfile(user.sub, dto);
   }
 
   /** Admin marks a doctor as verified (isProfileLive = true). */
@@ -70,6 +71,6 @@ export class DoctorsController {
     @CurrentUser() admin: JwtPayload,
   ) {
     await this.doctorsService.verifyDoctor(id, admin.sub);
-    return { success: true, message: 'Doctor verified' };
+    return { message: 'Doctor verified' };
   }
 }
