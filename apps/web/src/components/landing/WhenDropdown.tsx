@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { DayPicker } from 'react-day-picker';
+import 'react-day-picker/style.css';
 import { fr } from 'react-day-picker/locale';
 import { format, addDays, startOfWeek, endOfWeek } from 'date-fns';
 
