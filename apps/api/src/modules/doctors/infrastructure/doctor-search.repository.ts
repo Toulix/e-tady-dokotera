@@ -297,10 +297,17 @@ export class DoctorSearchRepository {
 
     // ── Layer 1: Basic filters ──
 
-    // The @> operator checks if the doctor's specialties array CONTAINS the given value.
-    // ARRAY['Cardiologie']::text[] creates a single-element array to compare against.
+    // BUG FIX: Previously used exact array containment (@>), which meant
+    // "Cardiologue" (practitioner title) wouldn't match "Cardiologie" (specialty name).
+    // Now uses pg_trgm fuzzy matching via unnest() — same approach as the `q` filter.
+    // This lets the sidebar specialty filter tolerate common variations:
+    //   "Cardiologue" → matches "Cardiologie" (similarity 0.6)
+    //   "Pédiatre"    → matches "Pédiatrie"    (similarity 0.58)
     const specialtyClause = specialty
-      ? sql`AND p.specialties @> ARRAY[${specialty}]::text[]`
+      ? sql`AND EXISTS (
+          SELECT 1 FROM unnest(p.specialties) AS spec
+          WHERE similarity(spec, ${specialty}) > 0.3
+        )`
       : empty;
 
     // Same approach for language — checks if doctor speaks the requested language
@@ -322,8 +329,24 @@ export class DoctorSearchRepository {
     // pg_trgm's similarity() function compares two strings and returns a score from 0 to 1.
     // A threshold of 0.3 is the PostgreSQL default — it catches common misspellings
     // (e.g., "Rakot" still matches "Rakoto") without returning too many false positives.
+    //
+    // BUG FIX (round 2): `q` must match against BOTH doctor names AND specialties,
+    // using fuzzy matching for both. Users type practitioner titles like "Cardiologue"
+    // but the DB stores specialty names like "Cardiologie". ILIKE substring matching
+    // fails here because "Cardiologue" is not a substring of "Cardiologie".
+    // pg_trgm similarity handles this well (similarity = 0.6 for that pair).
+    //
+    // The specialty check uses unnest() to compare `q` against each element of the
+    // specialties array individually, rather than casting the whole array to text.
+    // This avoids false positives from matching array delimiters like '{' or ','.
     const nameClause = q
-      ? sql`AND similarity(u.first_name || ' ' || u.last_name, ${q}) > 0.3`
+      ? sql`AND (
+          similarity(u.first_name || ' ' || u.last_name, ${q}) > 0.3
+          OR EXISTS (
+            SELECT 1 FROM unnest(p.specialties) AS spec
+            WHERE similarity(spec, ${q}) > 0.3
+          )
+        )`
       : empty;
 
     // ── Layer 3: PostGIS geographic filter ──
