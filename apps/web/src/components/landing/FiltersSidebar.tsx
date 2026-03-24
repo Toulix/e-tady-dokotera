@@ -82,7 +82,7 @@ export default function FiltersSidebar({ onFilterChange, onClearFilters }: Filte
             type="text"
             value={localSpecialty}
             onChange={(e) => setLocalSpecialty(e.target.value)}
-            placeholder="Ex : Cardiologie"
+            placeholder="Ex : Cardiologue, Pédiatrie..."
             className="w-full bg-surface-container border-none rounded-full px-4 py-2.5 text-sm font-semibold focus:ring-2 focus:ring-primary placeholder:text-outline-variant"
           />
         </div>
