@@ -10,26 +10,24 @@ export interface DoctorCardProps {
   languages: string[];
   avatarUrl?: string;
   isOnline?: boolean;
-  /** Years of experience — not yet returned by search API, shown only when available */
   yearsExp?: number;
-  /** Facility city/region — only present when the doctor has a registered facility */
   location?: string;
-  /** Distance from user — only present when geo filter (lat/lng/radius_km) is active */
   distance?: string;
-  /** Next available slot — requires scheduling module (Phase 3) */
   availability?: string;
-  /** "soon" renders green, "later" renders blue-ish */
   availabilityUrgency?: 'soon' | 'later';
-  /** Whether the doctor accepts video consultations */
   videoEnabled?: boolean;
-  /** Whether the doctor accepts new patients */
   acceptsNewPatients?: boolean;
 }
 
 /**
- * Single doctor result card used in the search results grid.
- * Shows avatar, credentials, price, rating, location, availability,
- * and two CTAs: "Détails" → doctor profile, "Réserver" → booking flow.
+ * Doctor result card — horizontal layout adapted from the Stitch redesign.
+ *
+ * Structure: avatar left, info middle (name/rating, specialty chip, location,
+ * availability slots, languages), fee badge top-right, CTA buttons bottom.
+ *
+ * Uses the existing app design tokens (primary, secondary-container, surface-*, etc.)
+ * rather than the Stitch Lambda Health palette, so it stays visually consistent
+ * with the rest of the app.
  */
 export default function DoctorCard({
   id,
@@ -40,146 +38,161 @@ export default function DoctorCard({
   reviewCount,
   languages,
   avatarUrl,
-  isOnline = false,
-  yearsExp,
   location,
   distance,
-  availability,
-  availabilityUrgency,
   videoEnabled,
   acceptsNewPatients,
 }: DoctorCardProps) {
   const formattedFee = fee.toLocaleString('fr-FR');
 
+  /**
+   * Generates initials from "Dr Firstname Lastname" for the avatar fallback.
+   * Takes the first letter of first name and last name (skipping the "Dr" prefix).
+   */
+  const initials = name
+    .replace(/^Dr\.?\s*/i, '')
+    .split(' ')
+    .filter(Boolean)
+    .map((w) => w[0])
+    .join('')
+    .toUpperCase()
+    .slice(0, 2);
+
   return (
-    <div className="bg-surface-container-lowest rounded-[2rem] p-6 shadow-sm hover:shadow-xl transition-all border border-transparent hover:border-primary-container/40 group">
-      {/* Top row: avatar + info + price */}
-      <div className="flex gap-6 mb-6">
-        {/* Avatar with online indicator */}
-        <div className="relative shrink-0">
-          <div className="w-24 h-24 rounded-full bg-surface-container-high ring-4 ring-surface-container shadow-inner overflow-hidden">
-            {avatarUrl ? (
-              <img
-                src={avatarUrl}
-                alt={name}
-                className="w-full h-full object-cover"
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center text-outline">
-                <span className="material-symbols-outlined text-4xl">person</span>
-              </div>
-            )}
-          </div>
-          {isOnline && (
-            <div className="absolute -bottom-1 -right-1 bg-green-500 w-5 h-5 rounded-full border-4 border-white" />
-          )}
-        </div>
-
-        {/* Name, specialty, rating */}
-        <div className="flex-1 min-w-0">
-          <div className="flex justify-between items-start gap-2">
-            <div className="min-w-0">
-              <h3 className="font-headline text-xl font-bold text-on-surface group-hover:text-primary transition-colors truncate">
-                {name}
-              </h3>
-              <p className="text-primary font-semibold text-sm">
-                {specialty}
-                {yearsExp != null && <> &bull; {yearsExp} ans d'exp.</>}
-              </p>
-            </div>
-            <div className="flex flex-col items-end shrink-0">
-              <span className="font-extrabold text-on-surface">{formattedFee} Ar</span>
-              <span className="text-[10px] text-outline uppercase font-bold">
-                Consultation
-              </span>
-            </div>
-          </div>
-
-          {/* Rating + badges */}
-          <div className="flex items-center gap-3 mt-3 flex-wrap">
-            <div className="flex items-center gap-1 text-tertiary">
-              <span
-                className="material-symbols-outlined text-lg"
-                style={{ fontVariationSettings: "'FILL' 1" }}
-              >
-                star
-              </span>
-              <span className="font-bold text-sm">{rating.toFixed(1)}</span>
-            </div>
-            <span className="text-xs text-outline font-medium">({reviewCount} avis)</span>
-
-            {/* Capability badges — video, new patients */}
-            {videoEnabled && (
-              <span className="px-2 py-0.5 bg-tertiary/10 text-tertiary rounded-full text-[10px] font-bold flex items-center gap-1">
-                <span className="material-symbols-outlined text-xs">videocam</span>
-                Vidéo
-              </span>
-            )}
-            {acceptsNewPatients && (
-              <span className="px-2 py-0.5 bg-green-50 text-green-700 rounded-full text-[10px] font-bold">
-                Nouveaux patients
-              </span>
-            )}
-
-            <div className="flex gap-1 ml-auto">
-              {languages.map((lang) => (
-                <span
-                  key={lang}
-                  className="px-1.5 py-0.5 bg-surface-container rounded text-[10px] font-bold"
-                >
-                  {lang}
-                </span>
-              ))}
-            </div>
-          </div>
-        </div>
+    // hover only elevates the shadow — no scale/translate so text content never shifts
+    <div className="bg-surface-container-lowest rounded-2xl p-6 transition-shadow duration-300 hover:shadow-[0_24px_48px_rgba(0,83,135,0.12)] group relative border border-outline-variant/5">
+      {/* Fee badge — positioned top-right like the Stitch design */}
+      <div className="absolute top-6 right-6 px-3 py-1 bg-secondary-container text-secondary rounded-lg text-sm font-bold">
+        {formattedFee} Ar
       </div>
 
-      {/* Bottom row: location, availability, CTAs */}
-      <div className="space-y-4 border-t border-outline-variant/10 pt-4">
-        <div className="flex items-center justify-between text-sm">
-          {/* Location — only shown when facility data is available */}
-          {(location || distance) && (
-            <div className="flex items-center gap-2 text-outline">
-              <span className="material-symbols-outlined text-base">location_on</span>
-              <span>
-                {location}
-                {location && distance && ' \u2022 '}
-                {distance}
-              </span>
-            </div>
-          )}
-          {/* Availability — shown when scheduling data exists, placeholder otherwise */}
-          {availability ? (
-            <span
-              className={`font-bold px-3 py-1 rounded-full text-xs ${
-                availabilityUrgency === 'soon'
-                  ? 'text-green-600 bg-green-50'
-                  : 'text-primary bg-primary/5'
-              }`}
-            >
-              {availability}
-            </span>
+      <div className="flex flex-col md:flex-row gap-6">
+        {/* Avatar — circular, with initials fallback */}
+        <div className="w-24 h-24 rounded-full overflow-hidden bg-primary-container flex items-center justify-center text-on-primary text-3xl font-bold shrink-0 shadow-inner">
+          {avatarUrl ? (
+            <img
+              src={avatarUrl}
+              alt={name}
+              className="w-full h-full object-cover"
+            />
           ) : (
-            <span className="font-bold px-3 py-1 rounded-full text-xs text-outline bg-surface-container">
-              Voir disponibilités
+            <span className="text-on-primary-container font-headline">
+              {initials}
             </span>
           )}
         </div>
 
-        <div className="flex gap-3">
-          <Link
-            to={`/doctors/${id}`}
-            className="flex-1 py-3 rounded-full bg-primary-container/20 text-primary font-bold text-sm hover:brightness-105 transition-all text-center"
-          >
-            Détails
-          </Link>
-          <Link
-            to={`/booking/${id}`}
-            className="flex-[2] py-3 rounded-full bg-primary text-on-primary font-bold text-sm hover:shadow-lg transition-all shadow-primary/10 text-center"
-          >
-            Réserver
-          </Link>
+        {/* Info section */}
+        <div className="flex-1 space-y-4">
+          {/* Name + rating */}
+          <div>
+            <div className="flex items-center gap-3 mb-1">
+              <h4 className="font-headline font-extrabold text-xl text-primary">
+                {name}
+              </h4>
+              <span className="flex items-center gap-1 text-xs font-bold text-secondary">
+                <span
+                  className="material-symbols-outlined text-sm"
+                  style={{ fontVariationSettings: "'FILL' 1" }}
+                >
+                  star
+                </span>
+                {rating.toFixed(1)} ({reviewCount} avis)
+              </span>
+            </div>
+
+            {/* Specialty chip + location */}
+            <div className="flex flex-wrap gap-2 items-center">
+              <span className="px-2.5 py-1 bg-surface-container-high rounded text-[11px] font-bold text-primary uppercase tracking-wider">
+                {specialty}
+              </span>
+
+              {videoEnabled && (
+                <>
+                  <span className="text-outline text-xs">•</span>
+                  <span className="px-2 py-0.5 bg-primary/5 text-primary rounded text-[11px] font-bold flex items-center gap-1">
+                    <span className="material-symbols-outlined text-xs">videocam</span>
+                    Vidéo
+                  </span>
+                </>
+              )}
+
+              {acceptsNewPatients && (
+                <>
+                  <span className="text-outline text-xs">•</span>
+                  <span className="px-2 py-0.5 bg-green-50 text-green-700 rounded text-[11px] font-bold">
+                    Nouveaux patients
+                  </span>
+                </>
+              )}
+
+              {(location || distance) && (
+                <>
+                  <span className="text-outline text-xs">•</span>
+                  <span className="text-outline text-xs flex items-center gap-1">
+                    <span className="material-symbols-outlined text-[14px]">location_on</span>
+                    {location}
+                    {location && distance && ' • '}
+                    {distance}
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
+
+          {/* Availability slots + Languages — two-column grid like Stitch */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+            {/* Availability slots — placeholder until scheduling module is live */}
+            <div className="space-y-2">
+              <span className="text-[10px] font-bold text-outline uppercase tracking-widest block">
+                Prochaines dispos
+              </span>
+              <div className="flex gap-2">
+                {/* Static placeholders — will be replaced by real slot data from scheduling API */}
+                <button type="button" className="px-3 py-2 bg-surface-container-low rounded-xl text-center min-w-20 hover:bg-secondary-container transition-colors">
+                  <div className="text-[10px] text-outline">Bientôt</div>
+                  <div className="text-sm font-bold text-primary">—</div>
+                </button>
+                <button type="button" className="px-3 py-2 bg-surface-container-low rounded-xl text-center min-w-20 hover:bg-secondary-container transition-colors">
+                  <div className="text-[10px] text-outline">Bientôt</div>
+                  <div className="text-sm font-bold text-primary">—</div>
+                </button>
+              </div>
+            </div>
+
+            {/* Languages */}
+            <div className="space-y-2">
+              <span className="text-[10px] font-bold text-outline uppercase tracking-widest block">
+                Langues parlées
+              </span>
+              <div className="flex gap-2 flex-wrap">
+                {languages.map((lang) => (
+                  <span
+                    key={lang}
+                    className="text-xs text-on-surface-variant font-medium px-2 py-1 bg-surface-container rounded-lg"
+                  >
+                    {lang}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* CTA buttons */}
+          <div className="flex gap-3 pt-4 border-t border-outline-variant/10">
+            <Link
+              to={`/booking/${id}`}
+              className="flex-1 bg-primary text-on-primary font-bold py-3 rounded-xl hover:shadow-lg hover:bg-primary-container transition-all text-center"
+            >
+              Réserver un rendez-vous
+            </Link>
+            <Link
+              to={`/doctors/${id}`}
+              className="px-6 py-3 border-2 border-outline-variant/20 text-primary font-bold rounded-xl hover:bg-surface-container-low transition-all text-center"
+            >
+              Détails
+            </Link>
+          </div>
         </div>
       </div>
     </div>

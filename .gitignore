@@ -13,5 +13,6 @@ coverage/
 *.bak
 *.tmp
 *.cache
+*.tsbuildinfo
 
 CLAUDE.md
