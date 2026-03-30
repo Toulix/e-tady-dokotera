@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import ErrorBoundary from './components/shared/ErrorBoundary';
 import AppShell from './components/layout/AppShell';
+import DoctorShell from './components/layout/DoctorShell';
 import HomePage from './pages/HomePage';
 import NotFoundPage from './pages/NotFoundPage';
 
@@ -15,6 +16,9 @@ const BookingSuccessPage = lazy(() => import('./pages/BookingSuccessPage'));
 const PatientDashboard = lazy(() => import('./pages/patient/DashboardPage'));
 const DoctorDashboard = lazy(() => import('./pages/doctor/DashboardPage'));
 const SchedulePage = lazy(() => import('./pages/doctor/SchedulePage'));
+const WeeklyAvailabilityPage = lazy(() => import('./pages/doctor/WeeklyAvailabilityPage'));
+const AppointmentSettingsPage = lazy(() => import('./pages/doctor/AppointmentSettingsPage'));
+const AvailabilityExceptionsPage = lazy(() => import('./pages/doctor/AvailabilityExceptionsPage'));
 const LoginPage = lazy(() => import('./pages/auth/LoginPage'));
 const RegisterPage = lazy(() => import('./pages/auth/RegisterPage'));
 const VerifyOtpPage = lazy(() => import('./pages/auth/VerifyOtpPage'));
@@ -50,8 +54,15 @@ export default function App() {
               <Route path="/booking/:doctorId" element={<BookingPage />} />
               <Route path="/booking/success" element={<BookingSuccessPage />} />
               <Route path="/patient/dashboard" element={<PatientDashboard />} />
+            </Route>
+
+            {/* Doctor-facing pages use their own sidebar layout */}
+            <Route element={<DoctorShell />}>
               <Route path="/doctor/dashboard" element={<DoctorDashboard />} />
               <Route path="/doctor/schedule" element={<SchedulePage />} />
+              <Route path="/doctor/availability" element={<WeeklyAvailabilityPage />} />
+              <Route path="/doctor/appointment-settings" element={<AppointmentSettingsPage />} />
+              <Route path="/doctor/exceptions" element={<AvailabilityExceptionsPage />} />
             </Route>
 
             {/* Catch-all for unknown URLs */}

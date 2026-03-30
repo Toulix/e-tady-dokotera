@@ -34,8 +34,11 @@ html, body {
   --color-secondary-container:       #bee1fe;
   --color-tertiary:                  #764400;
   --color-on-tertiary:               #ffffff;
+  --color-error:                     #ba1a1a;
   --color-error-container:           #ffdad6;
   --color-on-error-container:        #93000a;
+  --color-primary-fixed:             #cfe5ff;
+  --color-tertiary-fixed:            #ffdcbe;
 }
 
 /* ─── Font utility classes ────────────────────────────────────────────────────
@@ -83,6 +86,12 @@ html, body {
 
 .glass-nav {
   background-color: rgba(255, 255, 255, 0.9);
+  backdrop-filter: blur(20px);
+}
+
+/* Frosted-glass panel used by the doctor dashboard header */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.85);
   backdrop-filter: blur(20px);
 }
 
@@ -183,4 +192,26 @@ html, body {
 .when-calendar .rdp-button_previous:hover,
 .when-calendar .rdp-button_next:hover {
   background-color: var(--color-surface-container-high);
+}
+
+/* ─── Exception calendar modifiers ──────────────────────────────────────────
+   Highlight exception dates on the mini calendar in the exceptions page.
+   "unavailable" days get a red dot; "custom hours" days get a blue dot.
+   ──────────────────────────────────────────────────────────────────────────── */
+.when-calendar .exception-unavailable .rdp-day_button {
+  background-color: color-mix(in srgb, var(--color-error) 15%, transparent);
+  color: var(--color-error);
+  font-weight: 800;
+}
+
+.when-calendar .exception-custom .rdp-day_button {
+  background-color: color-mix(in srgb, var(--color-primary) 15%, transparent);
+  color: var(--color-primary);
+  font-weight: 800;
+}
+
+.when-calendar .exception-emergency .rdp-day_button {
+  background-color: color-mix(in srgb, var(--color-tertiary) 15%, transparent);
+  color: var(--color-tertiary);
+  font-weight: 800;
 }
