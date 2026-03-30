@@ -574,6 +574,13 @@ async function main() {
   if (existingUserIds.length > 0) {
     console.log(`  Cleaning up ${existingUserIds.length} existing seed records...\n`);
 
+    // Scheduling data references User — delete before users
+    await prisma.weeklyScheduleTemplate.deleteMany({
+      where: { doctorId: { in: existingUserIds } },
+    });
+    await prisma.scheduleException.deleteMany({
+      where: { doctorId: { in: existingUserIds } },
+    });
     // DoctorFacility references both User and Facility — delete first
     await prisma.doctorFacility.deleteMany({
       where: { doctorId: { in: existingUserIds } },
@@ -694,7 +701,264 @@ async function main() {
     console.log(`  ✓ ${patient.firstName} ${patient.lastName}`);
   }
 
-  console.log('\nSeed completed: 20 doctors + 3 patients created.');
+  // ── Scheduling seed data ──
+  // Create realistic weekly templates and exceptions for the first 10 doctors.
+  // Each doctor gets a different schedule pattern to make testing meaningful:
+  // - some work mornings only, some afternoons, some split shifts
+  // - appointment types vary (in_person, video, both)
+  // - slot durations match their specialty (psychiatry=60min, radiology=20min, etc.)
+  console.log('\nSeeding scheduling data (templates + exceptions)...\n');
+
+  // Re-fetch doctor user IDs by phone so we have their generated UUIDs.
+  // We only seed schedules for the first 10 doctors to keep it manageable.
+  const doctorUsers = await prisma.user.findMany({
+    where: { phoneNumber: { in: seedPhones.slice(0, 10) } },
+    select: { id: true, phoneNumber: true, firstName: true, lastName: true },
+    orderBy: { phoneNumber: 'asc' },
+  });
+
+  // Map phone → userId for easy lookup
+  const phoneToId = new Map(doctorUsers.map((u) => [u.phoneNumber, u.id]));
+
+  // Helper: builds a Date from "HH:mm" for Prisma's @db.Time() column.
+  // Only hours and minutes matter — the date portion is ignored by PostgreSQL.
+  const time = (hhmm: string) => new Date(`1970-01-01T${hhmm}:00.000Z`);
+
+  // Schedule definitions per doctor (by phone suffix for readability).
+  // Each entry describes one or more weekly template blocks.
+  const schedules: Array<{
+    phone: string;
+    templates: Array<{
+      dayOfWeek: number;
+      startTime: string;
+      endTime: string;
+      appointmentType: 'in_person' | 'video' | 'both';
+      slotDurationMinutes: number;
+      bufferMinutes: number;
+    }>;
+  }> = [
+    {
+      // Dr. Hery Rakotomalala — Médecine Générale
+      // Mon-Fri mornings + Mon/Wed/Fri afternoons, 30min slots
+      phone: '+261340000001',
+      templates: [
+        { dayOfWeek: 1, startTime: '08:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 1, startTime: '14:00', endTime: '17:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 2, startTime: '08:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 3, startTime: '08:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 3, startTime: '14:00', endTime: '17:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 4, startTime: '08:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 5, startTime: '08:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 5, startTime: '14:00', endTime: '17:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 5 },
+      ],
+    },
+    {
+      // Dr. Nirina Rabemananjara — Cardiologie
+      // Mon/Tue/Thu/Fri mornings, 45min slots (longer consults for cardiology)
+      phone: '+261340000002',
+      templates: [
+        { dayOfWeek: 1, startTime: '08:30', endTime: '12:30', appointmentType: 'in_person', slotDurationMinutes: 45, bufferMinutes: 10 },
+        { dayOfWeek: 2, startTime: '08:30', endTime: '12:30', appointmentType: 'in_person', slotDurationMinutes: 45, bufferMinutes: 10 },
+        { dayOfWeek: 4, startTime: '08:30', endTime: '12:30', appointmentType: 'both', slotDurationMinutes: 45, bufferMinutes: 10 },
+        { dayOfWeek: 5, startTime: '08:30', endTime: '12:30', appointmentType: 'both', slotDurationMinutes: 45, bufferMinutes: 10 },
+      ],
+    },
+    {
+      // Dr. Voahirana Randrianasolo — Pédiatrie
+      // Mon-Sat mornings (pediatricians often work Saturdays), 30min slots
+      phone: '+261340000003',
+      templates: [
+        { dayOfWeek: 1, startTime: '08:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 2, startTime: '08:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 2, startTime: '14:00', endTime: '16:30', appointmentType: 'video', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 3, startTime: '08:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 4, startTime: '08:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 5, startTime: '08:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 6, startTime: '08:00', endTime: '11:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 5 },
+      ],
+    },
+    {
+      // Dr. Andry Rabearivelo — Chirurgie Générale
+      // Tue/Thu consultations only (operates Mon/Wed/Fri), 30min slots
+      phone: '+261340000004',
+      templates: [
+        { dayOfWeek: 2, startTime: '09:00', endTime: '12:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 10 },
+        { dayOfWeek: 2, startTime: '14:00', endTime: '17:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 10 },
+        { dayOfWeek: 4, startTime: '09:00', endTime: '12:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 10 },
+        { dayOfWeek: 4, startTime: '14:00', endTime: '17:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 10 },
+      ],
+    },
+    {
+      // Dr. Fara Rasolofonirina — Gynécologie-Obstétrique
+      // Mon-Fri mornings + Wed afternoon video, 40min slots
+      phone: '+261340000005',
+      templates: [
+        { dayOfWeek: 1, startTime: '08:00', endTime: '12:00', appointmentType: 'in_person', slotDurationMinutes: 40, bufferMinutes: 5 },
+        { dayOfWeek: 2, startTime: '08:00', endTime: '12:00', appointmentType: 'in_person', slotDurationMinutes: 40, bufferMinutes: 5 },
+        { dayOfWeek: 3, startTime: '08:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 40, bufferMinutes: 5 },
+        { dayOfWeek: 3, startTime: '14:00', endTime: '17:00', appointmentType: 'video', slotDurationMinutes: 40, bufferMinutes: 5 },
+        { dayOfWeek: 4, startTime: '08:00', endTime: '12:00', appointmentType: 'in_person', slotDurationMinutes: 40, bufferMinutes: 5 },
+        { dayOfWeek: 5, startTime: '08:00', endTime: '12:00', appointmentType: 'in_person', slotDurationMinutes: 40, bufferMinutes: 5 },
+      ],
+    },
+    {
+      // Dr. Tiana Razafindrakoto — Dermatologie
+      // Mon/Wed/Fri, mix of in-person and video, 30min slots
+      phone: '+261340000006',
+      templates: [
+        { dayOfWeek: 1, startTime: '09:00', endTime: '12:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 1, startTime: '14:00', endTime: '16:00', appointmentType: 'video', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 3, startTime: '09:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 3, startTime: '14:00', endTime: '16:00', appointmentType: 'video', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 5, startTime: '09:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 30, bufferMinutes: 5 },
+      ],
+    },
+    {
+      // Dr. Jean-Baptiste Rakotondravao — Ophtalmologie
+      // Mon-Fri mornings only (no video — eye exams are in-person), 30min slots
+      phone: '+261340000007',
+      templates: [
+        { dayOfWeek: 1, startTime: '08:00', endTime: '12:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 2, startTime: '08:00', endTime: '12:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 3, startTime: '08:00', endTime: '12:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 4, startTime: '08:00', endTime: '12:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 5, startTime: '08:00', endTime: '12:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 5 },
+      ],
+    },
+    {
+      // Dr. Sahondra Andriamanitra — Médecine Interne
+      // Mon/Tue/Thu full day, Wed/Fri morning only, 45min slots
+      phone: '+261340000008',
+      templates: [
+        { dayOfWeek: 1, startTime: '08:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 45, bufferMinutes: 10 },
+        { dayOfWeek: 1, startTime: '14:00', endTime: '17:00', appointmentType: 'both', slotDurationMinutes: 45, bufferMinutes: 10 },
+        { dayOfWeek: 2, startTime: '08:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 45, bufferMinutes: 10 },
+        { dayOfWeek: 2, startTime: '14:00', endTime: '17:00', appointmentType: 'both', slotDurationMinutes: 45, bufferMinutes: 10 },
+        { dayOfWeek: 3, startTime: '08:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 45, bufferMinutes: 10 },
+        { dayOfWeek: 4, startTime: '08:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 45, bufferMinutes: 10 },
+        { dayOfWeek: 4, startTime: '14:00', endTime: '17:00', appointmentType: 'both', slotDurationMinutes: 45, bufferMinutes: 10 },
+        { dayOfWeek: 5, startTime: '08:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 45, bufferMinutes: 10 },
+      ],
+    },
+    {
+      // Dr. Rivo Ramaroson — Pneumologie
+      // Mon-Thu mornings + Tue/Thu afternoons video, 30min slots
+      phone: '+261340000009',
+      templates: [
+        { dayOfWeek: 1, startTime: '08:00', endTime: '12:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 2, startTime: '08:00', endTime: '12:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 2, startTime: '14:00', endTime: '16:30', appointmentType: 'video', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 3, startTime: '08:00', endTime: '12:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 4, startTime: '08:00', endTime: '12:00', appointmentType: 'in_person', slotDurationMinutes: 30, bufferMinutes: 5 },
+        { dayOfWeek: 4, startTime: '14:00', endTime: '16:30', appointmentType: 'video', slotDurationMinutes: 30, bufferMinutes: 5 },
+      ],
+    },
+    {
+      // Dr. Lalao Ravelojaona — Psychiatrie
+      // Mon-Thu only, 60min slots (standard psychiatry session length)
+      phone: '+261340000010',
+      templates: [
+        { dayOfWeek: 1, startTime: '09:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 60, bufferMinutes: 15 },
+        { dayOfWeek: 1, startTime: '14:00', endTime: '17:00', appointmentType: 'video', slotDurationMinutes: 60, bufferMinutes: 15 },
+        { dayOfWeek: 2, startTime: '09:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 60, bufferMinutes: 15 },
+        { dayOfWeek: 3, startTime: '09:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 60, bufferMinutes: 15 },
+        { dayOfWeek: 3, startTime: '14:00', endTime: '17:00', appointmentType: 'video', slotDurationMinutes: 60, bufferMinutes: 15 },
+        { dayOfWeek: 4, startTime: '09:00', endTime: '12:00', appointmentType: 'both', slotDurationMinutes: 60, bufferMinutes: 15 },
+      ],
+    },
+  ];
+
+  let templateCount = 0;
+
+  for (const schedule of schedules) {
+    const doctorId = phoneToId.get(schedule.phone);
+    if (!doctorId) continue;
+
+    for (const tmpl of schedule.templates) {
+      await prisma.weeklyScheduleTemplate.create({
+        data: {
+          doctorId,
+          dayOfWeek: tmpl.dayOfWeek,
+          startTime: time(tmpl.startTime),
+          endTime: time(tmpl.endTime),
+          appointmentType: tmpl.appointmentType,
+          slotDurationMinutes: tmpl.slotDurationMinutes,
+          bufferMinutes: tmpl.bufferMinutes,
+          maxBookingsPerSlot: 1,
+          isActive: true,
+          effectiveFrom: new Date('2026-01-01'),
+        },
+      });
+      templateCount++;
+    }
+
+    const doc = doctorUsers.find((u) => u.phoneNumber === schedule.phone);
+    console.log(`  ✓ Dr. ${doc?.firstName} ${doc?.lastName} — ${schedule.templates.length} templates`);
+  }
+
+  // Schedule exceptions: Malagasy public holidays and some personal days.
+  // These test the slot generator's ability to skip blocked dates.
+  const exceptions: Array<{
+    phone: string;
+    exceptionDate: string;
+    exceptionType: 'day_off' | 'custom_hours' | 'emergency_only';
+    customStartTime?: string;
+    customEndTime?: string;
+    reason: string;
+  }> = [
+    // Malagasy public holidays (applied to several doctors)
+    { phone: '+261340000001', exceptionDate: '2026-03-29', exceptionType: 'day_off', reason: 'Insurrection de 1947 — fête nationale' },
+    { phone: '+261340000002', exceptionDate: '2026-03-29', exceptionType: 'day_off', reason: 'Insurrection de 1947 — fête nationale' },
+    { phone: '+261340000003', exceptionDate: '2026-03-29', exceptionType: 'day_off', reason: 'Insurrection de 1947 — fête nationale' },
+    { phone: '+261340000005', exceptionDate: '2026-03-29', exceptionType: 'day_off', reason: 'Insurrection de 1947 — fête nationale' },
+
+    // Pâques 2026 (Easter Monday: April 6)
+    { phone: '+261340000001', exceptionDate: '2026-04-06', exceptionType: 'day_off', reason: 'Lundi de Pâques' },
+    { phone: '+261340000003', exceptionDate: '2026-04-06', exceptionType: 'day_off', reason: 'Lundi de Pâques' },
+    { phone: '+261340000008', exceptionDate: '2026-04-06', exceptionType: 'day_off', reason: 'Lundi de Pâques' },
+
+    // Fête du Travail (May 1)
+    { phone: '+261340000001', exceptionDate: '2026-05-01', exceptionType: 'day_off', reason: 'Fête du Travail' },
+    { phone: '+261340000004', exceptionDate: '2026-05-01', exceptionType: 'day_off', reason: 'Fête du Travail' },
+    { phone: '+261340000006', exceptionDate: '2026-05-01', exceptionType: 'day_off', reason: 'Fête du Travail' },
+
+    // Fête de l'Indépendance (June 26)
+    { phone: '+261340000001', exceptionDate: '2026-06-26', exceptionType: 'day_off', reason: 'Fête de l\'Indépendance' },
+    { phone: '+261340000002', exceptionDate: '2026-06-26', exceptionType: 'day_off', reason: 'Fête de l\'Indépendance' },
+    { phone: '+261340000007', exceptionDate: '2026-06-26', exceptionType: 'day_off', reason: 'Fête de l\'Indépendance' },
+    { phone: '+261340000010', exceptionDate: '2026-06-26', exceptionType: 'day_off', reason: 'Fête de l\'Indépendance' },
+
+    // Personal exceptions — custom hours (doctor works a shorter day)
+    { phone: '+261340000001', exceptionDate: '2026-04-10', exceptionType: 'custom_hours', customStartTime: '08:00', customEndTime: '11:00', reason: 'Réunion administrative l\'après-midi' },
+    { phone: '+261340000003', exceptionDate: '2026-04-17', exceptionType: 'custom_hours', customStartTime: '09:00', customEndTime: '12:00', reason: 'Formation continue à l\'hôpital' },
+    { phone: '+261340000005', exceptionDate: '2026-04-22', exceptionType: 'custom_hours', customStartTime: '14:00', customEndTime: '17:00', reason: 'Consultation d\'urgence uniquement le matin' },
+
+    // Emergency-only days
+    { phone: '+261340000004', exceptionDate: '2026-04-14', exceptionType: 'emergency_only', reason: 'Formation chirurgicale — urgences seulement' },
+    { phone: '+261340000008', exceptionDate: '2026-04-20', exceptionType: 'emergency_only', reason: 'Congrès de médecine interne — urgences seulement' },
+  ];
+
+  let exceptionCount = 0;
+
+  for (const exc of exceptions) {
+    const doctorId = phoneToId.get(exc.phone);
+    if (!doctorId) continue;
+
+    await prisma.scheduleException.create({
+      data: {
+        doctorId,
+        exceptionDate: new Date(exc.exceptionDate),
+        exceptionType: exc.exceptionType,
+        customStartTime: exc.customStartTime ? time(exc.customStartTime) : null,
+        customEndTime: exc.customEndTime ? time(exc.customEndTime) : null,
+        reason: exc.reason,
+      },
+    });
+    exceptionCount++;
+  }
+
+  console.log(`  ✓ ${exceptionCount} schedule exceptions created`);
+  console.log(`\nSeed completed: 20 doctors + 3 patients + ${templateCount} templates + ${exceptionCount} exceptions.`);
 }
 
 main()
