@@ -22,7 +22,7 @@ import {
  * - slot_duration_minutes 5–240: 5min minimum prevents abuse, 4h max covers
  *   the longest realistic consultation (surgery follow-up blocks)
  * - buffer_minutes 0–60: 1h max buffer between slots is generous
- * - max_bookings_per_slot 1–10: supports group sessions but caps payload abuse
+ * - max_bookings_per_slot 1–3: supports group sessions (Phase 2); slot generator uses max=1 for MVP
  */
 export class CreateWeeklyTemplateDto {
   @IsInt()
@@ -57,10 +57,13 @@ export class CreateWeeklyTemplateDto {
   @Max(60)
   buffer_minutes?: number;
 
+  // MVP: the slot generator (Step 16) treats all slots as single-booking (effectively max=1).
+  // This field is validated so the data model is ready when multi-booking is enabled in Phase 2.
+  // Max value is 3 — group consultation limit per spec §3.2.2.
   @IsOptional()
   @IsInt()
   @Min(1)
-  @Max(10)
+  @Max(3)
   max_bookings_per_slot?: number;
 
   @IsDateString()
