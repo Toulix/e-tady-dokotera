@@ -1,4 +1,4 @@
-import { IsDateString, IsOptional, IsUUID } from 'class-validator';
+import { IsOptional, IsUUID, Matches } from 'class-validator';
 
 /**
  * Query parameters for the availability endpoint.
@@ -8,10 +8,13 @@ import { IsDateString, IsOptional, IsUUID } from 'class-validator';
  * because they drive an expensive computation (slot generation).
  */
 export class AvailabilityQueryDto {
-  @IsDateString()
+  // Strict YYYY-MM-DD format. @IsDateString() also accepts full ISO datetimes
+  // like '2026-06-01T23:00:00Z', which produce different Date objects when
+  // parsed with new Date() and can cause off-by-one day errors in queries.
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'start_date must be in YYYY-MM-DD format' })
   start_date: string;
 
-  @IsDateString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'end_date must be in YYYY-MM-DD format' })
   end_date: string;
 
   @IsOptional()

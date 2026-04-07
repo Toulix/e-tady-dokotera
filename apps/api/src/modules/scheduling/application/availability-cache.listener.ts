@@ -4,7 +4,10 @@ import Redis from 'ioredis';
 import { REDIS_CLIENT } from '../../../shared/redis/redis.module';
 import { AppointmentBookedEvent } from '../../../shared/events/appointment-booked.event';
 import { AppointmentCancelledEvent } from '../../../shared/events/appointment-cancelled.event';
+import { AppointmentRescheduledEvent } from '../../../shared/events/appointment-rescheduled.event';
 import { ScheduleTemplateUpdatedEvent } from '../../../shared/events/schedule-template-updated.event';
+import { ScheduleExceptionUpdatedEvent } from '../../../shared/events/schedule-exception-updated.event';
+import { SlotLockExpiredEvent } from '../../../shared/events/slot-lock-expired.event';
 
 // Maximum SCAN iterations to prevent infinite loops if the cursor
 // never converges (defensive — shouldn't happen with a healthy Redis).
@@ -59,6 +62,49 @@ export class AvailabilityCacheListener {
     } catch (error) {
       this.logger.error(
         `Failed to invalidate cache after schedule update for doctor ${event.doctorId}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+  }
+
+  // A reschedule may be emitted as a single event (not cancel+rebook),
+  // so the cache must be invalidated to reflect the freed and newly occupied slots.
+  @OnEvent('appointment.rescheduled')
+  async handleAppointmentRescheduled(event: AppointmentRescheduledEvent): Promise<void> {
+    try {
+      await this.invalidateDoctorCache(event.doctorId);
+    } catch (error) {
+      this.logger.error(
+        `Failed to invalidate cache after appointment rescheduled for doctor ${event.doctorId}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+  }
+
+  // When a schedule exception is created, updated, or deleted (e.g. day off,
+  // custom hours), the doctor's availability changes and the cache must be cleared.
+  @OnEvent('schedule.exception.updated')
+  async handleScheduleExceptionUpdated(event: ScheduleExceptionUpdatedEvent): Promise<void> {
+    try {
+      await this.invalidateDoctorCache(event.doctorId);
+    } catch (error) {
+      this.logger.error(
+        `Failed to invalidate cache after schedule exception update for doctor ${event.doctorId}`,
+        error instanceof Error ? error.stack : String(error),
+      );
+    }
+  }
+
+  // When a slot lock expires, the previously locked slot becomes available again.
+  // Without invalidation, the cached response would show it as unavailable
+  // until the 30s TTL expires naturally.
+  @OnEvent('slot.lock.expired')
+  async handleSlotLockExpired(event: SlotLockExpiredEvent): Promise<void> {
+    try {
+      await this.invalidateDoctorCache(event.doctorId);
+    } catch (error) {
+      this.logger.error(
+        `Failed to invalidate cache after slot lock expired for doctor ${event.doctorId}`,
         error instanceof Error ? error.stack : String(error),
       );
     }

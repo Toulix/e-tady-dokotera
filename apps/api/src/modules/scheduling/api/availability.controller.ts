@@ -4,7 +4,9 @@ import {
   Param,
   Query,
   ParseUUIDPipe,
+  UseGuards,
 } from '@nestjs/common';
+import { ThrottlerGuard, Throttle } from '@nestjs/throttler';
 import { AvailabilityService } from '../application/availability.service';
 import { AvailabilityQueryDto } from '../application/dto';
 
@@ -20,6 +22,11 @@ import { AvailabilityQueryDto } from '../application/dto';
  * No auth guards — availability is public information. Patients must be
  * able to view a doctor's free slots before creating an account or logging in.
  */
+// Tighter rate limit than the global default (100/min) because this is a
+// public, unauthenticated endpoint that triggers 4 DB queries on cache miss.
+// 30 requests per minute per IP is generous for legitimate browsing.
+@UseGuards(ThrottlerGuard)
+@Throttle({ default: { ttl: 60_000, limit: 30 } })
 @Controller('doctors')
 export class AvailabilityController {
   constructor(private readonly availabilityService: AvailabilityService) {}

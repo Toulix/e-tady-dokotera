@@ -77,6 +77,7 @@ export class AvailabilityService {
     startDate: string,
     endDate: string,
     facilityId?: string,
+    now: Date = new Date(),
   ): Promise<Record<string, SerializedTimeSlot[]>> {
     this.validateDateRange(startDate, endDate);
 
@@ -128,6 +129,7 @@ export class AvailabilityService {
       { from: new Date(startDate), to: new Date(endDate) },
       TIMEZONE,
       minAdvanceHours,
+      now,
     );
 
     // ── 5. Group by date and serialize ────────────────────────────────
