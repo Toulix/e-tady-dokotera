@@ -383,4 +383,85 @@ describe('generateAvailableSlots', () => {
     expect(slots).toHaveLength(5);
     expect(slots[0].startTime.toISOString()).toBe('2025-01-06T06:30:00.000Z'); // 09:30 EAT
   });
+
+  // Test 15: multi-day range with mixed exceptions — the most realistic usage pattern
+  it('handles a multi-day range with mixed exceptions (normal, day_off, custom_hours)', () => {
+    // Mon 2025-01-06 = normal, Tue 2025-01-07 = day_off, Wed 2025-01-08 = custom_hours 10:00–11:00
+    const FRIDAY_NOW = new Date('2025-01-03T00:00:00Z'); // before the range so advance-booking doesn't interfere
+
+    const monTemplate = makeTemplate({ id: 'mon', dayOfWeek: 1 }); // Mon 09:00–12:00
+    const tueTemplate = makeTemplate({ id: 'tue', dayOfWeek: 2 }); // Tue 09:00–12:00
+    const wedTemplate = makeTemplate({ id: 'wed', dayOfWeek: 3 }); // Wed 09:00–12:00
+
+    const tueDayOff = makeException({
+      id: 'tue-off',
+      exceptionDate: dateOf(2025, 1, 7),
+      exceptionType: 'day_off' as ExceptionType,
+    });
+
+    const wedCustom = makeException({
+      id: 'wed-custom',
+      exceptionDate: dateOf(2025, 1, 8),
+      exceptionType: 'custom_hours' as ExceptionType,
+      customStartTime: timeOf(10),
+      customEndTime: timeOf(11),
+    });
+
+    const slots = generateAvailableSlots(
+      [monTemplate, tueTemplate, wedTemplate],
+      [tueDayOff, wedCustom],
+      [],
+      [],
+      { from: dateOf(2025, 1, 6), to: dateOf(2025, 1, 8) },
+      'Indian/Antananarivo',
+      0,
+      FRIDAY_NOW,
+    );
+
+    // Monday: 6 normal slots (09:00–11:30 EAT)
+    const monSlots = slots.filter(s => s.startTime >= new Date('2025-01-06T00:00:00Z') && s.startTime < new Date('2025-01-07T00:00:00Z'));
+    expect(monSlots).toHaveLength(6);
+
+    // Tuesday: 0 slots (day_off)
+    const tueSlots = slots.filter(s => s.startTime >= new Date('2025-01-07T00:00:00Z') && s.startTime < new Date('2025-01-08T00:00:00Z'));
+    expect(tueSlots).toHaveLength(0);
+
+    // Wednesday: 2 slots (custom_hours 10:00–11:00 EAT = 07:00–08:00 UTC)
+    const wedSlots = slots.filter(s => s.startTime >= new Date('2025-01-08T00:00:00Z') && s.startTime < new Date('2025-01-09T00:00:00Z'));
+    expect(wedSlots).toHaveLength(2);
+    expect(wedSlots[0].startTime.toISOString()).toBe('2025-01-08T07:00:00.000Z'); // 10:00 EAT
+    expect(wedSlots[1].startTime.toISOString()).toBe('2025-01-08T07:30:00.000Z'); // 10:30 EAT
+  });
+
+  // Test 16: custom_hours exception skips templates whose window doesn't overlap
+  it('skips afternoon template when custom_hours only overlaps morning window', () => {
+    // Morning template: 09:00–12:00. Afternoon template: 14:00–17:00.
+    // custom_hours exception: 10:00–11:00.
+    // Only the morning template overlaps → 2 slots from morning, 0 from afternoon.
+    const morning = makeTemplate({ id: 'morning', startTime: timeOf(9), endTime: timeOf(12) });
+    const afternoon = makeTemplate({ id: 'afternoon', startTime: timeOf(14), endTime: timeOf(17) });
+
+    const exception = makeException({
+      exceptionType: 'custom_hours' as ExceptionType,
+      customStartTime: timeOf(10),
+      customEndTime: timeOf(11),
+    });
+
+    const slots = generateAvailableSlots(
+      [morning, afternoon],
+      [exception],
+      [],
+      [],
+      { from: MONDAY_DATE, to: MONDAY_DATE },
+      'Indian/Antananarivo',
+      0,
+      FIXED_NOW,
+    );
+
+    // Only 2 slots from the morning template's custom window (10:00 and 10:30 EAT)
+    // Afternoon template is skipped because 14:00–17:00 doesn't overlap 10:00–11:00
+    expect(slots).toHaveLength(2);
+    expect(slots[0].startTime.toISOString()).toBe('2025-01-06T07:00:00.000Z'); // 10:00 EAT
+    expect(slots[1].startTime.toISOString()).toBe('2025-01-06T07:30:00.000Z'); // 10:30 EAT
+  });
 });

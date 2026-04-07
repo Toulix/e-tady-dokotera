@@ -123,7 +123,11 @@ export function generateAvailableSlots(
     // ── 3. Slot generation ─────────────────────────────────────────────────────
     for (const template of dayTemplates) {
       // Determine the working window for this day.
-      // For 'custom_hours' exceptions, override the template's window with the exception times.
+      // For 'custom_hours' exceptions, override the template's window with the exception times —
+      // but only if the template's original window overlaps with the custom window.
+      // Without this check, a custom_hours exception (e.g. 10:00–11:00) would apply to ALL
+      // templates on that day, causing an afternoon template (14:00–17:00) to also generate
+      // 10:00–11:00 slots (duplicates).
       // TIME columns are stored as Date objects anchored to 1970-01-01 UTC — extract
       // hours/minutes via getUTCHours()/getUTCMinutes() to avoid local timezone interference.
       let windowStartH: number;
@@ -136,6 +140,23 @@ export function generateAvailableSlots(
         exception.customStartTime &&
         exception.customEndTime
       ) {
+        // Compare template window vs custom window using minutes-since-midnight
+        // to determine overlap. Two ranges [a1,a2] and [b1,b2] overlap when a1 < b2 AND a2 > b1.
+        const tplStartMin =
+          template.startTime.getUTCHours() * 60 + template.startTime.getUTCMinutes();
+        const tplEndMin = template.endTime.getUTCHours() * 60 + template.endTime.getUTCMinutes();
+        const excStartMin =
+          exception.customStartTime.getUTCHours() * 60 +
+          exception.customStartTime.getUTCMinutes();
+        const excEndMin =
+          exception.customEndTime.getUTCHours() * 60 + exception.customEndTime.getUTCMinutes();
+
+        if (tplStartMin >= excEndMin || tplEndMin <= excStartMin) {
+          // Template's original window doesn't overlap with the custom hours —
+          // skip this template entirely (doctor is not available in this window today).
+          continue;
+        }
+
         windowStartH = exception.customStartTime.getUTCHours();
         windowStartM = exception.customStartTime.getUTCMinutes();
         windowEndH = exception.customEndTime.getUTCHours();
