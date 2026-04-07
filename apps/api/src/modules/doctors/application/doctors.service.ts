@@ -87,6 +87,22 @@ export class DoctorsService {
   }
 
   /**
+   * Returns the doctor's minimum advance booking hours setting.
+   *
+   * Used by the availability endpoint (Step 17) to configure the slot
+   * generator — slots starting sooner than this threshold are excluded.
+   * Throws 404 if the doctor doesn't exist, which the availability
+   * endpoint surfaces directly to the caller.
+   */
+  async getMinAdvanceBookingHours(doctorId: string): Promise<number> {
+    const profile = await this.doctorRepository.findByUserId(doctorId);
+    if (!profile) {
+      throw new NotFoundException('Doctor not found');
+    }
+    return profile.minAdvanceBookingHours;
+  }
+
+  /**
    * Allows a doctor to update their own profile.
    * Maps snake_case DTO fields to camelCase Prisma fields.
    * Emits DoctorProfileUpdatedEvent for cross-module consumers.

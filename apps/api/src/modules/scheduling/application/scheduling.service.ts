@@ -49,6 +49,32 @@ export class SchedulingService {
 
   constructor(private readonly schedulingRepository: SchedulingRepository) {}
 
+  // ─── Cross-module availability data ─────────────────────────────────
+
+  /**
+   * Returns the raw scheduling data needed by the availability endpoint.
+   *
+   * This is the cross-module interface — the AvailabilityService calls
+   * this instead of reaching into SchedulingRepository directly.
+   * Templates are returned unfiltered (all for the doctor, including
+   * inactive) because the slot generator handles isActive filtering internally.
+   */
+  async getSchedulingDataForAvailability(
+    doctorId: string,
+    from: Date,
+    to: Date,
+  ): Promise<{
+    templates: WeeklyScheduleTemplate[];
+    exceptions: ScheduleException[];
+  }> {
+    const [templates, exceptions] = await Promise.all([
+      this.schedulingRepository.findTemplatesByDoctor(doctorId),
+      this.schedulingRepository.findExceptionsByDoctorAndRange(doctorId, from, to),
+    ]);
+
+    return { templates, exceptions };
+  }
+
   // ─── Weekly templates ───────────────────────────────────────────────
 
   async createTemplate(
