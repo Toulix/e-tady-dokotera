@@ -915,6 +915,12 @@ model SlotLock {
 
 Translate every entity from the spec (Section 5) into this file. Key models: `User`, `DoctorProfile`, `Facility`, `DoctorFacility`, `Appointment`, `SlotLock`, `WeeklyScheduleTemplate`, `ScheduleException`, `NotificationLog`, `VideoSession`, `ConsentRecord`.
 
+> ⚠️ **Step 16 addition — `DoctorProfile.minAdvanceBookingHours`:** Add this field to the `DoctorProfile` model (see spec §5.1 and §3.1.3). The slot generator reads it to filter out slots too close to the current time. Default is 2 hours.
+> ```prisma
+> // In DoctorProfile model:
+> minAdvanceBookingHours Int @default(2) @map("min_advance_booking_hours")
+> ```
+
 ```bash
 npx prisma migrate dev --name init_all_schemas
 npx prisma generate
@@ -1636,21 +1642,32 @@ export function generateAvailableSlots(
   exceptions: ScheduleException[],
   existingAppointments: { startTime: Date; durationMinutes: number }[],
   activeSlotLocks: { slotTime: Date }[],
-  dateRange: { from: Date; to: Date },
+  dateRange: { from: Date; to: Date },           // both ends inclusive
   timezone: string = 'Indian/Antananarivo',
+  minAdvanceBookingHours: number = 2,            // pass DoctorProfile.minAdvanceBookingHours here
 ): TimeSlot[] {
   // Algorithm:
-  // 1. For each date in range:
-  //    a. Find templates matching date's day_of_week
-  //    b. Check for ScheduleException on this date:
+  // 1. For each calendar date in [from, to] (inclusive):
+  //    a. Find exception for this date (compare via .toISODate() — never raw timestamp):
   //       - 'day_off'        → skip entire date
-  //       - 'custom_hours'   → use exception times instead of template
-  //       - 'emergency_only' → mark slots accordingly
-  //    c. Split template window into slots of slot_duration_minutes + buffer_minutes
-  //    d. Remove slots that overlap with existing appointments
-  //    e. Remove slots covered by active Redis locks
-  //    f. Remove slots in the past or within min_advance_booking window (2h default)
-  // 2. Return flat array of { startTime, endTime, appointmentType, isAvailable }
+  //       - 'custom_hours'   → use exception times instead of template window
+  //       - 'emergency_only' → set isEmergencyOnly = true on all slots for this date
+  //    b. Find active templates where dayOfWeek matches AND date is within [effectiveFrom, effectiveUntil]:
+  //       - luxon DateTime.weekday is ISO (1=Mon, 7=Sun); template.dayOfWeek is JS (0=Sun, 6=Sat).
+  //         Conversion: luxonWeekday === 7 ? 0 : luxonWeekday
+  //       - All date comparisons use .toISODate() string comparison to avoid UTC-vs-local drift.
+  //    c. For each matching template, generate slots while slotEnd ≤ windowEnd:
+  //         step = slot_duration_minutes + buffer_minutes
+  //    d. Per slot — apply filters in order:
+  //       1. slotStart < now + minAdvanceBookingHours → skip
+  //       2. Any existing appointment overlaps slot time window → skip
+  //          ⚠️ MVP: first overlap removes the slot regardless of max_bookings_per_slot.
+  //             Multi-booking (max 3) is Phase 2.
+  //       3. activeSlotLocks contains this slot's startTime (UTC ISO match) → skip
+  //          ⚠️ Assumption: slot lock keys use slot.startTime.toISOString() (UTC ISO 8601).
+  //             Both sides of the comparison must produce UTC ISO strings — ensured by
+  //             always converting luxon slot times via .toUTC().toJSDate() before comparison.
+  // 2. Return flat array sorted by startTime ASC.
 }
 ```
 
@@ -1681,7 +1698,13 @@ describe('generateAvailableSlots', () => {
   it('excludes slots within the min_advance_booking window')
   it('handles buffer time between slots correctly')
   it('handles date range spanning a week boundary')
-  it('marks slots as unavailable when covered by active slot locks')
+  it('marks isEmergencyOnly=true when exception_type is emergency_only')
+  // Additional edge cases:
+  it('returns no slots for dates where no template matches the day_of_week')
+  it('ignores inactive templates (isActive = false)')
+  it('ignores templates whose effective date range does not cover the date')
+  it('merges slots from two templates on the same day (morning + afternoon)')
+  it('removes a slot with max_bookings_per_slot=2 if 1 booking exists (MVP single-booking rule)')
 })
 ```
 

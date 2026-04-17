@@ -971,6 +971,7 @@ Ref: [BOOKING_ID]
   average_rating: INTEGER | NULL  // 0–500 (represents 0.00–5.00 × 100); integer avoids Prisma NUMERIC(3,2) precision issues. Owned and updated by Doctors module on review submission — NOT written by Analytics (cross-module write violation). Display as rating/100 in UI.
   total_reviews: INTEGER DEFAULT 0
   total_appointments: INTEGER DEFAULT 0
+  min_advance_booking_hours: INTEGER DEFAULT 2  // hours before a slot that the patient can still book; configurable per doctor (spec §3.1.3)
 }
 ```
 
@@ -1082,12 +1083,14 @@ Ref: [BOOKING_ID]
   appointment_type: ENUM('in_person', 'video', 'both')
   slot_duration_minutes: INTEGER DEFAULT 30
   buffer_minutes: INTEGER DEFAULT 0
-  max_bookings_per_slot: INTEGER DEFAULT 1
+  max_bookings_per_slot: INTEGER DEFAULT 1  // validated 1–3; see MVP note below
   is_active: BOOLEAN DEFAULT true
   effective_from: DATE
   effective_until: DATE | NULL
 }
 ```
+
+> ⚠️ **MVP note (Step 16):** `max_bookings_per_slot` is validated at 1–3 so the data model is ready for group consultations, but the slot generator treats every slot as single-booking (count ≥ 1 removes the slot). Multi-booking support is Phase 2.
 
 #### ScheduleException (blocks or overrides template for specific dates)
 
