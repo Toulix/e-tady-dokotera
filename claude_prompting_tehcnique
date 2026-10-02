@@ -1,0 +1,121 @@
+Great question! Here's an effective workflow for implementing roadmap features with Claude:
+
+Workflow Template
+1. Pick One Clear Step (not the whole feature)
+Instead of "implement authModule", break it into:
+
+Step 1: Set up auth schema (Prisma models)
+Step 2: Build UserRepository + UserService
+Step 3: Implement POST /register endpoint
+Step 4: Add OTP generation/sending logic
+Step 5: Implement POST /verify-otp endpoint
+Step 6: Add JWT token generation & response handling
+This keeps context small and lets you validate each piece.
+
+2. Provide Concrete Context
+When you ask me to implement a step, include:
+
+What: "Implement POST /register with OTP sending"
+Where: Point to the relevant module (e.g., apps/api/src/auth/)
+Constraints: Ref the patterns from CLAUDE.md
+"Use UserRepository (no raw Prisma in service)"
+"Emit UserRegistered domain event"
+"Use OtpService to send SMS via SmsAdapter"
+3. Leverage Existing Docs
+Share relevant excerpts:
+
+
+From spec.md §3.1 (Auth Module):
+- Register validates phone number (Madagascar format)
+- OTP expires after 5min, max 3 attempts per phone
+- JWT: 15min access, 7day refresh token via HttpOnly cookie
+This is faster than me re-reading the spec for every step.
+
+4. Example Prompt for Step 1 (Schema)
+
+Implement the auth schema in apps/api/prisma/schema.prisma:
+- User model (id, phone, password_hash, created_at)
+- OtpAttempt model (tracking OTP tries per phone)
+- Use TIMESTAMPTZ, @db.VarChar for phone
+- Reference spec.md §5.1 for field definitions
+
+Then run: prisma generate
+5. Validate After Each Step
+
+pnpm lint                    # Catch TS errors
+pnpm test --filter=api       # If unit tests exist
+docker compose up            # Full integration check
+For Auth Module Specifically
+Register → OTP → Verify → JWT has these dependencies:
+
+Step	Dependencies	Validation
+1. Schema	(none)	prisma generate works
+2. Repositories	Schema ✓	TypeScript compiles
+3. Services	Repos ✓	Services export correctly
+4. POST /register	Services ✓, SmsAdapter mock	Returns 201, OTP queued
+5. POST /verify-otp	Repos ✓, JwtService ready	Returns 200 + refresh cookie
+6. JWT handling	All ✓	Token in memory, refresh via HttpOnly cookie
+Pro Tips
+Ask me to read files first — I'll explore the existing structure before suggesting code:
+
+
+Check apps/api/src/auth/ structure and tell me what's already there
+Use /simplify skill — After I write code, run this to catch redundancy/patterns:
+
+
+/simplify
+Commit after each step — Keeps progress atomic and helps debugging:
+
+
+pnpm build && git add -A && git commit -m "feat(auth): implement register endpoint"
+Read spec.md § relevant section — I'll reference it automatically, but skimming helps you catch edge cases I might miss.
+
+Start with: Open roadmap.md, pick Step 3 (or whichever auth step is next), and tell me "Implement Step X: [description]" + what you see in the current codebase. I'll take it from there. 🚀
+
+
+
+
+
+Effective Prompting Strategy
+1. One Step at a Time (Most Important)
+The roadmap is your spec. Reference it explicitly:
+
+"Implement Step 6 from the roadmap: the Auth data layer. Create AuthRepository with all 6 methods. Follow the CLAUDE.md conventions (no Prisma in services, all timestamps @db.Timestamptz, String UUIDs)."
+
+Never ask for multiple steps at once — each step builds on the previous.
+
+2. Prompt Template That Works Well
+
+Implement [Step N] from docs/roadmap.md: [Step Title].
+
+Context:
+- [any relevant files already created]
+- [any decisions or deviations from the spec]
+
+Follow CLAUDE.md conventions. Read the relevant files before writing code.
+3. Auth Module — Recommended Order
+Step	What to ask
+Step 6	"Implement the AuthRepository — read the current Prisma schema first, then create the repository with all 6 methods"
+Step 7	"Implement OtpService — bcrypt hash in Redis, 10-min TTL, per-phone attempt counter (max 5)"
+Step 8	"Implement the 5 auth endpoints — read Steps 7 and 6 outputs first, enforce user_type='patient' on register, HttpOnly cookie for refresh token"
+Step 9	"Implement JwtAuthGuard + RolesGuard + Redis denylist in JwtStrategy.validate()"
+4. Before Each Step — Anchor Claude
+Start with:
+
+"Before writing anything, read [relevant existing files]. Then implement..."
+
+This prevents Claude from making assumptions about what already exists.
+
+5. After Each Step — Verify
+Ask:
+
+"Review what you just wrote against the CLAUDE.md conventions and docs/roadmap.md Step N. Are there any violations?"
+
+This catches things like Prisma calls leaking into services, missing @db.Timestamptz, etc.
+
+6. When Something Goes Wrong
+Be specific about the error:
+
+"This test fails: [paste error]. Read [file] first, then diagnose and fix. Explain why it broke."
+
+Bottom line: One step, read-before-write, explicit file references. The roadmap already has everything — just point Claude at it directly.

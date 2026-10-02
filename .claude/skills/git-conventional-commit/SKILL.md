@@ -227,3 +227,7 @@ For **changelogs**, use markdown with dated headers and grouped sections.
 - **Breaking changes**: always add `BREAKING CHANGE:` footer AND optionally `!` after type (e.g., `feat!:`)
 - **No scope needed**: if the change is truly global or affects the whole project, omit scope
 - **Custom types**: if the user mentions a type you don't recognize, ask if it's a project convention before flagging it as invalid
+
+
+## Key conventions
+- Never include co-authored by claude in the commit message

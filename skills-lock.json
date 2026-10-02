@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "skills": {
+    "ai-ui-patterns": {
+      "source": "PatternsDev/skills",
+      "sourceType": "github",
+      "computedHash": "3f0d503a933b18b2c3845703be1844ae15f5141c110fcd7773ef339ecb3e8ee1"
+    },
+    "client-side-rendering": {
+      "source": "PatternsDev/skills",
+      "sourceType": "github",
+      "computedHash": "1c1861f040f29e2503b7517e274eb58f841d5ea5c9042cb17013a71a18d89db3"
+    },
+    "compound-pattern": {
+      "source": "PatternsDev/skills",
+      "sourceType": "github",
+      "computedHash": "a0e517445e0f72e2fc9432b6cd263de2c2b91d82746e2d3e94f301a0eeec9350"
+    },
+    "hoc-pattern": {
+      "source": "PatternsDev/skills",
+      "sourceType": "github",
+      "computedHash": "2bb2a15249ce88d9b752617b5ebaafd5cee57e04e372872383885a1c58b33434"
+    },
+    "hooks-pattern": {
+      "source": "PatternsDev/skills",
+      "sourceType": "github",
+      "computedHash": "cd45ce7364ac8596391822f37b8e2867e564c0f6a6a071813ba17dc36616fb62"
+    },
+    "presentational-container-pattern": {
+      "source": "PatternsDev/skills",
+      "sourceType": "github",
+      "computedHash": "f5ceda69bb0f1c78f3cb2c290a8d86ae129c3adcdd6ea68e6c43d809faf41b37"
+    },
+    "progressive-hydration": {
+      "source": "PatternsDev/skills",
+      "sourceType": "github",
+      "computedHash": "8d33053c22004cf63e6ce2d90d94d3aba24a7e8422d6c9f1940f724e2caa1d9f"
+    },
+    "react-2026": {
+      "source": "PatternsDev/skills",
+      "sourceType": "github",
+      "computedHash": "dab7e62596165bffb42474e6f2aad7d8ca632e7a26881c1d016dc9da31b30f41"
+    },
+    "react-composition-2026": {
+      "source": "PatternsDev/skills",
+      "sourceType": "github",
+      "computedHash": "7336986263159d4760a57005581f1a4c282cf1d2440dc720298da345747191e9"
+    },
+    "react-data-fetching": {
+      "source": "PatternsDev/skills",
+      "sourceType": "github",
+      "computedHash": "9cc8025b2571a86d0c71489d8e7fefa47a1a9136699cee2868d62266be257cc9"
+    },
+    "react-render-optimization": {
+      "source": "PatternsDev/skills",
+      "sourceType": "github",
+      "computedHash": "3d5571008383de39ea2cd6b2a7367afaf3f75f4c315c47fddbd4d63c6664214f"
+    },
+    "react-selective-hydration": {
+      "source": "PatternsDev/skills",
+      "sourceType": "github",
+      "computedHash": "9e62022c86de09d84e8950b6d2f806005a74fca5c8192880e99eb50c03a8b588"
+    },
+    "react-server-components": {
+      "source": "PatternsDev/skills",
+      "sourceType": "github",
+      "computedHash": "6e6087014110753acec09e642215177237c99ca4c05c227fb0a249ef0ad650b5"
+    },
+    "render-props-pattern": {
+      "source": "PatternsDev/skills",
+      "sourceType": "github",
+      "computedHash": "e3fed62f60a4fc1cf5e729626594415f53e2bbe7fd9c0218470005d9d0951b53"
+    }
+  }
+}
