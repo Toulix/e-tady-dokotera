@@ -1776,6 +1776,7 @@ async onTemplateUpdated(event: ScheduleTemplateUpdatedEvent) {
 
 ---
 
+
 ### ✅ Step 18 — Calendar slot picker UI
 
 This is the most visible UI component. Invest time in it.
